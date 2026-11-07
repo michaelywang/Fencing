@@ -208,9 +208,10 @@ export function PlanEditor({ doc, update, wide }: { doc: EventDoc; update: Updat
         })}
       </div>
 
+      {picker ? (
       <DrillPicker
-        open={picker !== null}
-        mode={picker?.mode ?? "add"}
+        open
+        mode={picker.mode}
         doc={doc}
         onClose={() => setPicker(null)}
         onAdd={(blocks) => {
@@ -218,10 +219,11 @@ export function PlanEditor({ doc, update, wide }: { doc: EventDoc; update: Updat
           setPicker(null);
         }}
         onReplace={(drill) => {
-          if (picker?.mode === "replace") replaceFromLibrary(picker.blockId, drill);
+          if (picker.mode === "replace") replaceFromLibrary(picker.blockId, drill);
           setPicker(null);
         }}
       />
+      ) : null}
     </div>
   );
 }

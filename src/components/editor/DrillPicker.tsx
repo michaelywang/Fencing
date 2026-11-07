@@ -64,12 +64,6 @@ export function DrillPicker({
     };
   }, [open, q, weapon, level, maxDuration]);
 
-  useEffect(() => {
-    if (!open) {
-      setSelected(null);
-    }
-  }, [open]);
-
   function choose(d: LibraryDrill) {
     if (mode === "replace") {
       onReplace(d);

@@ -28,8 +28,6 @@ export function EventPanel({
 
   useEffect(() => {
     let cancelled = false;
-    setRecord(null);
-    setError(null);
     api<{ event: EventRecord }>(`/api/events/${id}`)
       .then((r) => !cancelled && setRecord(r.event))
       .catch((e) => !cancelled && setError(e instanceof ApiError ? e.message : "Could not load this event."));

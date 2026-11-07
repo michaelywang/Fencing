@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fencing
+          POSTGRES_PASSWORD: fencing
+          POSTGRES_DB: fencing_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fencing" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://fencing:fencing@localhost:5432/fencing_test
+      E2E_DATABASE_URL: postgres://fencing:fencing@localhost:5432/fencing_e2e
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      VITE_CONFIG_NATIVE_IGNORE_WARNING: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Create the end-to-end database
+        run: PGPASSWORD=fencing psql -h localhost -U fencing -d fencing_test -c "CREATE DATABASE fencing_e2e;"
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Unit and integration tests (real PostgreSQL)
+        run: npm test
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests (production build)
+        run: npm run test:e2e
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screens
+          path: tests/e2e/.artifacts/screens
+          retention-days: 7

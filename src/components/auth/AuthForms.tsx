@@ -1,9 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "@/lib/api-client";
 import { Button, Label, Notice, inputClass } from "@/components/ui";
+
+/** After signing in, load the coach area fresh so server components see the new session. */
+function useGoTo() {
+  const router = useRouter();
+  return (path: string) => {
+    router.replace(path);
+    router.refresh();
+  };
+}
 
 function useSubmit() {
   const [busy, setBusy] = useState(false);
@@ -39,12 +49,13 @@ function Field({ id, label, hint, ...props }: { id: string; label: string; hint?
 
 export function LoginForm({ next }: { next?: string }) {
   const { busy, error, run } = useSubmit();
+  const goTo = useGoTo();
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     void run(async () => {
       await api("/api/auth/login", { body: { email: f.get("email"), password: f.get("password") } });
-      window.location.assign(safeNext(next));
+      goTo(safeNext(next));
     });
   };
   return (
@@ -66,6 +77,7 @@ export function LoginForm({ next }: { next?: string }) {
 
 export function SetupForm() {
   const { busy, error, run } = useSubmit();
+  const goTo = useGoTo();
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -79,7 +91,7 @@ export function SetupForm() {
       await api("/api/auth/setup", {
         body: { setupToken: f.get("setupToken"), name: f.get("name"), email: f.get("email"), password: f.get("password"), loadDemo: f.get("loadDemo") === "on" },
       });
-      window.location.assign("/coach");
+      goTo("/coach");
     });
   };
   return (
@@ -103,6 +115,7 @@ export function SetupForm() {
 
 export function InviteForm({ token, email, suggestedName }: { token: string; email: string; suggestedName: string }) {
   const { busy, error, run } = useSubmit();
+  const goTo = useGoTo();
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -114,7 +127,7 @@ export function InviteForm({ token, email, suggestedName }: { token: string; ema
     }
     void run(async () => {
       await api("/api/auth/invite", { body: { token, name: f.get("name"), password: f.get("password") } });
-      window.location.assign("/coach");
+      goTo("/coach");
     });
   };
   return (
@@ -136,6 +149,7 @@ export function InviteForm({ token, email, suggestedName }: { token: string; ema
 
 export function ResetForm({ token, email }: { token: string; email: string }) {
   const { busy, error, run } = useSubmit();
+  const goTo = useGoTo();
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -147,7 +161,7 @@ export function ResetForm({ token, email }: { token: string; email: string }) {
     }
     void run(async () => {
       await api("/api/auth/reset", { body: { token, password: f.get("password") } });
-      window.location.assign("/coach");
+      goTo("/coach");
     });
   };
   return (

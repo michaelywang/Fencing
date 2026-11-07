@@ -326,7 +326,7 @@ async function importTx(tx: Tx, actor: SessionUser, file: ImportFile, report: Im
       const { changed } = await saveEventTx(tx, actor, existing.id, null, reuseBlockIds(doc.data, existing), { action: "import", summary: "Updated by import" });
       if (changed.length) report.counts.events.updated++;
     } else {
-      await createEventTx(tx, actor, doc.data, { action: "import", summary: "Created by import", externalRef: e.key && !isUuid(e.key) ? e.key : null });
+      await createEventTx(tx, actor, doc.data, { action: "import", summary: "Created by import", externalRef: e.key ?? null });
       report.counts.events.created++;
     }
   }

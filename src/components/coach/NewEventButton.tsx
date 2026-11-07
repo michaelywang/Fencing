@@ -40,13 +40,19 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
   const [day, setDay] = useState(date);
 
   useEffect(() => {
-    if (open) {
-      setDay(date);
-      api<{ templates: TemplateLite[] }>("/api/templates")
-        .then((r) => setTemplates(r.templates))
-        .catch(() => setTemplates([]));
-    }
-  }, [open, date]);
+    if (!open) return;
+    let cancelled = false;
+    api<{ templates: TemplateLite[] }>("/api/templates")
+      .then((r) => !cancelled && setTemplates(r.templates))
+      .catch(() => !cancelled && setTemplates([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+  const openDialog = () => {
+    setDay(date);
+    setOpen(true);
+  };
 
   async function create(kind: EventKind) {
     setBusy(true);
@@ -79,7 +85,7 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
       {compact ? (
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={openDialog}
           aria-label={`Add event on ${formatDateMedium(date)}`}
           title="Add event"
           className="touch-target flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-gl-blue-soft hover:text-gl-blue focus:text-gl-blue"
@@ -87,7 +93,7 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
           +
         </button>
       ) : (
-        <Button size="sm" variant="primary" onClick={() => setOpen(true)}>
+        <Button size="sm" variant="primary" onClick={openDialog}>
           {label ?? "+ New event"}
         </Button>
       )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { cx, inputClass } from "@/components/ui";
 
 export function FieldLabel({ htmlFor, children, hint, priv }: { htmlFor: string; children: ReactNode; hint?: ReactNode; priv?: boolean }) {
@@ -104,14 +104,13 @@ export function LinesField({
 }) {
   const id = useId();
   const [text, setText] = useState(value.join("\n"));
-  const last = useRef(value);
-  useEffect(() => {
-    if (JSON.stringify(value) !== JSON.stringify(last.current)) {
-      last.current = value;
-      const parsed = text.split("\n").map((s) => s.trim()).filter(Boolean);
-      if (JSON.stringify(parsed) !== JSON.stringify(value)) setText(value.join("\n"));
-    }
-  }, [value, text]);
+  const [seen, setSeen] = useState(value);
+  // Re-sync only when the value changes from outside (e.g. conflict resolution, restore).
+  if (seen !== value) {
+    setSeen(value);
+    const parsed = text.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (JSON.stringify(parsed) !== JSON.stringify(value)) setText(value.join("\n"));
+  }
   return (
     <div className={className}>
       <FieldLabel htmlFor={id} hint={hint}>
@@ -125,9 +124,7 @@ export function LinesField({
         placeholder={placeholder}
         onChange={(e) => {
           setText(e.target.value);
-          const parsed = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean);
-          last.current = parsed;
-          onChange(parsed);
+          onChange(e.target.value.split("\n").map((s) => s.trim()).filter(Boolean));
         }}
       />
     </div>
@@ -138,13 +135,12 @@ export function LinesField({
 export function CommaField({ label, value, onChange, hint = "(comma-separated)", className, placeholder }: { label: string; value: string[]; onChange: (v: string[]) => void; hint?: ReactNode; className?: string; placeholder?: string }) {
   const id = useId();
   const [text, setText] = useState(value.join(", "));
-  const last = useRef(value);
-  useEffect(() => {
-    if (JSON.stringify(value) !== JSON.stringify(last.current)) {
-      last.current = value;
-      setText(value.join(", "));
-    }
-  }, [value]);
+  const [seen, setSeen] = useState(value);
+  if (seen !== value) {
+    setSeen(value);
+    const parsed = text.split(",").map((s) => s.trim()).filter(Boolean);
+    if (JSON.stringify(parsed) !== JSON.stringify(value)) setText(value.join(", "));
+  }
   return (
     <div className={className}>
       <FieldLabel htmlFor={id} hint={hint}>
@@ -157,9 +153,7 @@ export function CommaField({ label, value, onChange, hint = "(comma-separated)",
         placeholder={placeholder}
         onChange={(e) => {
           setText(e.target.value);
-          const parsed = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
-          last.current = parsed;
-          onChange(parsed);
+          onChange(e.target.value.split(",").map((s) => s.trim()).filter(Boolean));
         }}
       />
     </div>
@@ -185,10 +179,11 @@ export function NumberField({
 }) {
   const id = useId();
   const [text, setText] = useState(value == null ? "" : String(value));
-  useEffect(() => {
+  const [seen, setSeen] = useState(value);
+  if (seen !== value) {
+    setSeen(value);
     if ((text === "" ? null : Number(text)) !== value) setText(value == null ? "" : String(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }
   return (
     <div className={className}>
       <FieldLabel htmlFor={id} hint={hint}>

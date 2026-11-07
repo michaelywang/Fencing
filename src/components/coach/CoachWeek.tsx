@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useSyncedState } from "@/components/hooks";
 import { api, ApiError } from "@/lib/api-client";
 import { addDays, addMinutesToTime, formatClock, formatDateMedium, formatWeekRange, startOfWeek } from "@/lib/dates";
 import { INTENSITY_LABEL, PLAN_KINDS, type Intensity } from "@/lib/constants";
@@ -29,8 +30,7 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
   const params = useSearchParams();
   const toast = useToast();
   const { locations, today } = useCoach();
-  const [records, setRecords] = useState(initialRecords);
-  useEffect(() => setRecords(initialRecords), [initialRecords]);
+  const [records, setRecords] = useSyncedState(initialRecords);
   const [dialog, setDialog] = useState<null | "publish" | "duplicate">(null);
 
   const selectedId = params.get("e");
@@ -51,7 +51,7 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
     return `${pathname}?${next.toString()}`;
   };
 
-  const upsert = useCallback((rec: EventRecord) => setRecords((prev) => (prev.some((r) => r.id === rec.id) ? prev.map((r) => (r.id === rec.id ? rec : r)) : [...prev, rec].sort((a, b) => a.date.localeCompare(b.date)))), []);
+  const upsert = useCallback((rec: EventRecord) => setRecords((prev) => (prev.some((r) => r.id === rec.id) ? prev.map((r) => (r.id === rec.id ? rec : r)) : [...prev, rec].sort((a, b) => a.date.localeCompare(b.date)))), [setRecords]);
   const views = useMemo(() => records.filter((r) => r.date >= weekStart && r.date <= addDays(weekStart, 6)).map((r) => fromRecord(r, locations)), [records, locations, weekStart]);
   const byId = useMemo(() => new Map(records.map((r) => [r.id, r])), [records]);
 
@@ -120,6 +120,7 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
       </div>
       {selectedId ? (
         <EventPanel
+          key={selectedId}
           id={selectedId}
           onClose={() => setParam("e", null)}
           onChange={upsert}
@@ -130,8 +131,8 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
           onCreated={() => router.refresh()}
         />
       ) : null}
-      <PublishWeekDialog open={dialog === "publish"} records={unpublished} onClose={() => setDialog(null)} onDone={() => { setDialog(null); router.refresh(); }} />
-      <DuplicateWeekDialog open={dialog === "duplicate"} weekStart={weekStart} onClose={() => setDialog(null)} onDone={(target) => { setDialog(null); router.push(`/coach/week?d=${target}`); }} />
+      {dialog === "publish" ? <PublishWeekDialog open records={unpublished} onClose={() => setDialog(null)} onDone={() => { setDialog(null); router.refresh(); }} /> : null}
+      {dialog === "duplicate" ? <DuplicateWeekDialog open weekStart={weekStart} onClose={() => setDialog(null)} onDone={(target) => { setDialog(null); router.push(`/coach/week?d=${target}`); }} /> : null}
     </div>
   );
 }
@@ -147,8 +148,7 @@ function BlockButton({ event, block: b, onOpen }: { event: ViewEvent; block: Vie
 }
 
 function CoachEventHeader({ event, selected, onOpen, onSave }: { event: ViewEvent; selected: boolean; onOpen: () => void; onSave: (patch: Partial<EventDoc>) => Promise<void> }) {
-  const [theme, setTheme] = useState(event.theme);
-  useEffect(() => setTheme(event.theme), [event.theme]);
+  const [theme, setTheme] = useSyncedState(event.theme);
   const isPlan = PLAN_KINDS.includes(event.kind);
   const timeline = isPlan && event.blocks.length ? analyzePractice(event.blocks, event.targetMinutes) : null;
   const issues = timeline ? summarizeIssues(timeline) : [];
@@ -219,15 +219,9 @@ function CoachEventHeader({ event, selected, onOpen, onSave }: { event: ViewEven
 
 function PublishWeekDialog({ open, records, onClose, onDone }: { open: boolean; records: EventRecord[]; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(records.map((r) => r.id)));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setSelected(new Set(records.map((r) => r.id)));
-      setNote("");
-    }
-  }, [open, records]);
   async function submit() {
     setBusy(true);
     try {
@@ -291,9 +285,6 @@ function DuplicateWeekDialog({ open, weekStart, onClose, onDone }: { open: boole
   const [copyCoaches, setCopyCoaches] = useState(true);
   const [copyNotes, setCopyNotes] = useState(false);
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (open) setTarget(addDays(weekStart, 7));
-  }, [open, weekStart]);
   const targetMonday = target ? startOfWeek(target) : "";
   async function submit() {
     setBusy(true);

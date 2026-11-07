@@ -96,7 +96,11 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
   const retryDelay = useRef(3000);
   const statusRef = useRef<SaveStatus>("saved");
   const onSavedRef = useRef(opts.onSaved);
-  onSavedRef.current = opts.onSaved;
+  useEffect(() => {
+    onSavedRef.current = opts.onSaved;
+  }, [opts.onSaved]);
+  /** Latest `save` for timers scheduled from inside `save` itself. */
+  const saveRef = useRef<() => Promise<EventRecord | null>>(async () => null);
 
   const setStatusBoth = (s: SaveStatus) => {
     statusRef.current = s;
@@ -104,8 +108,10 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
   };
 
   // Offer to restore a recovery copy left by an earlier failed save on this device.
+  // localStorage is only readable after hydration, so this runs once on mount.
   useEffect(() => {
     const b = readBackup(id);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of an external store (localStorage) after mount
     if (b && JSON.stringify(b.doc) !== JSON.stringify(docFromRecord(initial))) setBackup(b);
     else if (b) clearBackup(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -139,7 +145,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
           setStatusBoth("saved");
         } else {
           setStatusBoth("dirty");
-          timer.current = window.setTimeout(() => void save(), 300);
+          timer.current = window.setTimeout(() => void saveRef.current(), 300);
         }
         return res.event;
       } catch (err) {
@@ -153,7 +159,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
         } else if (e.isNetwork) {
           setStatusBoth("offline");
           setError("Can't reach the server. Your changes are kept on this device and will save automatically when you're back online.");
-          retryTimer.current = window.setTimeout(() => void save(), retryDelay.current);
+          retryTimer.current = window.setTimeout(() => void saveRef.current(), retryDelay.current);
           retryDelay.current = Math.min(retryDelay.current * 2, 30_000);
         } else {
           setStatusBoth("error");
@@ -167,6 +173,10 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
     inFlight.current = p;
     return p;
   }, [id]);
+
+  useEffect(() => {
+    saveRef.current = save;
+  }, [save]);
 
   const update = useCallback(
     (fn: (d: EventDoc) => EventDoc) => {

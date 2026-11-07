@@ -40,7 +40,13 @@ export function MonthView({ year, month, today, events, phases, weapon, renderCa
   const weeks = monthGrid(year, month);
   const byDate = new Map<string, ViewEvent[]>();
   for (const e of events) byDate.set(e.date, [...(byDate.get(e.date) ?? []), e]);
-  const initial = isSameMonth(today, year, month) ? today : weeks.flat().find((d) => isSameMonth(d, year, month) && byDate.has(d)) ?? weeks[0][0];
+  // Phones show one day at a time: today if something is on, otherwise the next day with events.
+  const monthDays = weeks.flat().filter((d) => isSameMonth(d, year, month));
+  const initial =
+    (isSameMonth(today, year, month) && byDate.has(today) ? today : null) ??
+    monthDays.find((d) => d >= today && byDate.has(d)) ??
+    monthDays.find((d) => byDate.has(d)) ??
+    (isSameMonth(today, year, month) ? today : monthDays[0]);
   const [selected, setSelected] = useState(initial);
   const visiblePhases = phases.filter((p) => p.startDate <= weeks[weeks.length - 1][6] && p.endDate >= weeks[0][0]);
 

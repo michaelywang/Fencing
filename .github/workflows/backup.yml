@@ -1,0 +1,56 @@
+# OPTIONAL nightly database backup — NOT active until you add two repository
+# secrets (Settings → Secrets and variables → Actions):
+#   BACKUP_DATABASE_URL  — the direct (non-pooled) Postgres URL (Neon: DATABASE_URL_UNPOOLED)
+#   BACKUP_PASSPHRASE    — a long random passphrase; store it somewhere safe too
+# Dumps are encrypted (AES-256, gpg) BEFORE upload, so private coaching notes are
+# never stored in plain text on GitHub. Artifacts are kept for 30 days.
+# Restore steps: docs/OPERATIONS.md → "Restore from a GitHub Actions backup".
+name: Nightly database backup
+
+on:
+  schedule:
+    - cron: "17 7 * * *" # 07:17 UTC ≈ 2–3 AM in New Jersey
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          DB: ${{ secrets.BACKUP_DATABASE_URL }}
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$DB" ] || [ -z "$PASS" ]; then
+            echo "Backup secrets are not set — skipping (see docs/OPERATIONS.md)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install PostgreSQL 16 client
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-16
+      - name: Dump and encrypt
+        if: steps.cfg.outputs.enabled == 'true'
+        env:
+          DB: ${{ secrets.BACKUP_DATABASE_URL }}
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          STAMP=$(date -u +%Y-%m-%dT%H%MZ)
+          /usr/lib/postgresql/16/bin/pg_dump --format=custom --no-owner --no-privileges "$DB" > "gl-fencing-$STAMP.dump"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$PASS" --symmetric --cipher-algo AES256 "gl-fencing-$STAMP.dump"
+          rm "gl-fencing-$STAMP.dump"
+          ls -la
+      - name: Upload encrypted backup
+        if: steps.cfg.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gl-fencing-db-backup
+          path: "*.dump.gpg"
+          retention-days: 30

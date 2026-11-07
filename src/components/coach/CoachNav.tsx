@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { Wordmark } from "@/components/Logo";
 import { cx } from "@/components/ui";
@@ -22,6 +22,7 @@ const LINKS = [
 export function CoachNav() {
   const { user } = useCoach();
   const pathname = usePathname();
+  const router = useRouter();
   const [menu, setMenu] = useState(false);
   const links = user.role === "admin" ? [...LINKS, { href: "/coach/admin", label: "Admin" }] : LINKS;
 
@@ -30,7 +31,8 @@ export function CoachNav() {
       await api("/api/auth/logout", { method: "POST", body: {} });
     } finally {
       for (const k of Object.keys(localStorage)) if (k.startsWith("glf.backup.")) localStorage.removeItem(k);
-      window.location.assign("/login");
+      router.replace("/login");
+      router.refresh();
     }
   }
 

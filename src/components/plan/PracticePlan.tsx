@@ -33,20 +33,24 @@ function timeRange(event: ViewEvent, b: { start: number; duration: number }) {
 }
 
 export function PracticePlan({ event, initialWeapon = "all", rememberWeapon, coachView, sectionsOpen = true }: Props) {
-  const [prefWeapon, setPrefWeapon] = useWeaponPreference(initialWeapon);
+  const [prefWeapon, setPrefWeapon] = useWeaponPreference(initialWeapon, { refresh: Boolean(rememberWeapon) });
   const [localWeapon, setLocalWeapon] = useState<WeaponFilter>(initialWeapon);
   const weapon = rememberWeapon ? prefWeapon : localWeapon;
   const setWeapon = rememberWeapon ? setPrefWeapon : setLocalWeapon;
 
-  const lanes: Weapon[] = weapon === "all" ? [...WEAPONS] : [weapon];
+  const lanes = useMemo<Weapon[]>(() => (weapon === "all" ? [...WEAPONS] : [weapon]), [weapon]);
   const blocks = event.blocks;
   const byId = useMemo(() => new Map(blocks.map((b) => [b.id, b])), [blocks]);
-  const grid = useMemo(() => buildScheduleGrid(blocks, lanes), [blocks, lanes.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const grid = useMemo(() => buildScheduleGrid(blocks, lanes), [blocks, lanes]);
 
-  const sections: Array<{ lane: Lane; blocks: ViewBlock[] }> = [
-    { lane: "shared" as Lane, blocks: sortBlocks(blocks.filter((b) => b.scope === "shared")) },
-    ...lanes.map((w) => ({ lane: w as Lane, blocks: sortBlocks(blocks.filter((b) => b.scope === "weapon" && appliesToWeapon(b, w))) })),
-  ].filter((s) => s.blocks.length > 0);
+  const sections = useMemo<Array<{ lane: Lane; blocks: ViewBlock[] }>>(
+    () =>
+      [
+        { lane: "shared" as Lane, blocks: sortBlocks(blocks.filter((b) => b.scope === "shared")) },
+        ...lanes.map((w) => ({ lane: w as Lane, blocks: sortBlocks(blocks.filter((b) => b.scope === "weapon" && appliesToWeapon(b, w))) })),
+      ].filter((s) => s.blocks.length > 0),
+    [blocks, lanes],
+  );
 
   const allKeys = useMemo(() => [...sections.map((s) => `s:${s.lane}`), ...blocks.map((b) => `b:${b.id}`)], [sections, blocks]);
   const [open, setOpen] = useState<Set<string>>(() => new Set(sectionsOpen ? sections.map((s) => `s:${s.lane}`) : []));
@@ -59,7 +63,7 @@ export function PracticePlan({ event, initialWeapon = "all", rememberWeapon, coa
       return next;
     });
 
-  const timeline = useMemo(() => (coachView ? analyzePractice(blocks, event.targetMinutes, lanes) : null), [coachView, blocks, event.targetMinutes, lanes.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const timeline = useMemo(() => (coachView ? analyzePractice(blocks, event.targetMinutes, lanes) : null), [coachView, blocks, event.targetMinutes, lanes]);
 
   if (blocks.length === 0) {
     return (

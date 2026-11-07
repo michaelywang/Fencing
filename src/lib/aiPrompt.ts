@@ -3,7 +3,8 @@
  * into the "gl-fencing-plan" import format. Mirrored in docs/IMPORT_FORMAT.md.
  */
 export const AI_IMPORT_PROMPT = `You are helping a high school fencing coach (foil, épée, saber) enter planning data into a calendar app.
-Convert the notes I paste below into ONE JSON file in the "gl-fencing-plan" format, version 1. Output only the JSON.
+Convert the notes I paste below into ONE JSON file in the "gl-fencing-plan" format, version 1.
+Output only valid JSON (no comments, no explanations) so it can be saved as a .json file and uploaded.
 
 FORMAT (all fields optional unless marked REQUIRED):
 {

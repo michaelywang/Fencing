@@ -144,7 +144,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
     await ed.flush();
     const url = `/coach/preview/${record.id}`;
     if (w) w.location.href = url;
-    else window.location.href = url;
+    else router.push(url);
   }
 
   const tabs: Array<{ key: Tab; label: string }> = [
@@ -312,7 +312,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
       </div>
 
       {/* Dialogs */}
-      <PublishDialog open={dialog === "publish"} onClose={() => setDialog(null)} warnings={warnings.map((w) => w.message)} changed={publication === "changed"} busy={busy} onConfirm={publish} />
+      {dialog === "publish" ? <PublishDialog open onClose={() => setDialog(null)} warnings={warnings.map((w) => w.message)} changed={publication === "changed"} busy={busy} onConfirm={publish} /> : null}
       <ConfirmDialog
         open={dialog === "unpublish"}
         title="Unpublish this event?"
@@ -341,9 +341,10 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
         onClose={() => setDialog(null)}
         onConfirm={remove}
       />
-      <CancelDialog open={dialog === "cancel"} doc={doc} published={publication !== "draft"} busy={busy} onClose={() => setDialog(null)} onConfirm={cancelEvent} />
+      {dialog === "cancel" ? <CancelDialog open doc={doc} published={publication !== "draft"} busy={busy} onClose={() => setDialog(null)} onConfirm={cancelEvent} /> : null}
+      {dialog === "duplicate" ? (
       <DuplicateDialog
-        open={dialog === "duplicate"}
+        open
         eventId={record.id}
         date={doc.date}
         onClose={() => setDialog(null)}
@@ -355,7 +356,8 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
           toast({ message: `Created ${ids.length} draft ${ids.length === 1 ? "copy" : "copies"}.`, tone: "success", action: ids[0] ? { label: "Open", onClick: () => router.push(`/coach/e/${ids[0]}`) } : undefined });
         }}
       />
-      <TemplateDialog open={dialog === "template"} eventId={record.id} doc={doc} onClose={() => setDialog(null)} beforeSave={() => ed.flush()} />
+      ) : null}
+      {dialog === "template" ? <TemplateDialog open eventId={record.id} doc={doc} onClose={() => setDialog(null)} beforeSave={() => ed.flush()} /> : null}
       <ConflictDialog
         open={ed.status === "conflict" && ed.conflict !== null}
         mine={doc}
@@ -376,12 +378,12 @@ function MenuItem({ children, onClick, danger }: { children: React.ReactNode; on
 }
 
 export function SaveIndicator({ status, lastSavedAt, onRetry }: { status: SaveStatus; lastSavedAt: number | null; onRetry: () => void }) {
-  const [, force] = useState(0);
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
-    const t = window.setInterval(() => force((n) => n + 1), 30_000);
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(t);
   }, []);
-  const ago = lastSavedAt ? Math.round((Date.now() - lastSavedAt) / 60_000) : null;
+  const ago = lastSavedAt && now ? Math.max(0, Math.round((now - lastSavedAt) / 60_000)) : 0;
   const map: Record<SaveStatus, { text: string; cls: string }> = {
     saved: { text: lastSavedAt ? (ago === 0 ? "✓ Saved just now" : `✓ Saved ${ago} min ago`) : "✓ All changes saved", cls: "text-emerald-800" },
     dirty: { text: "● Unsaved changes…", cls: "text-slate-600" },
@@ -406,12 +408,6 @@ export function SaveIndicator({ status, lastSavedAt, onRetry }: { status: SaveSt
 function PublishDialog({ open, onClose, onConfirm, warnings, changed, busy }: { open: boolean; onClose: () => void; onConfirm: (note: string) => void; warnings: string[]; changed: boolean; busy: boolean }) {
   const [note, setNote] = useState("");
   const [ack, setAck] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setNote("");
-      setAck(false);
-    }
-  }, [open]);
   return (
     <Modal
       open={open}
@@ -474,12 +470,6 @@ function CancelDialog({ open, doc, published, busy, onClose, onConfirm }: { open
   const reinstating = doc.status === "canceled";
   const [reason, setReason] = useState(doc.cancelReason);
   const [publishNow, setPublishNow] = useState(published);
-  useEffect(() => {
-    if (open) {
-      setReason(doc.cancelReason);
-      setPublishNow(published);
-    }
-  }, [open, doc.cancelReason, published]);
   return (
     <Modal
       open={open}
@@ -522,9 +512,6 @@ function DuplicateDialog({ open, eventId, date, onClose, onDone, beforeCopy }: {
   const [copyCoaches, setCopyCoaches] = useState(true);
   const [copyNotes, setCopyNotes] = useState(false);
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (open) setDates([addDays(date, 7)]);
-  }, [open, date]);
   async function submit() {
     setBusy(true);
     try {
@@ -581,14 +568,11 @@ function DuplicateDialog({ open, eventId, date, onClose, onDone, beforeCopy }: {
 
 function TemplateDialog({ open, eventId, doc, onClose, beforeSave }: { open: boolean; eventId: string; doc: EventDoc; onClose: () => void; beforeSave: () => Promise<unknown> }) {
   const toast = useToast();
-  const [name, setName] = useState("");
+  const [name, setName] = useState(doc.theme || doc.title || "Practice template");
   const [description, setDescription] = useState("");
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeCoaches, setIncludeCoaches] = useState(false);
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (open) setName(doc.theme || doc.title || "Practice template");
-  }, [open, doc.theme, doc.title]);
   async function submit() {
     setBusy(true);
     try {

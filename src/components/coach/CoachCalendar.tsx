@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useSyncedState } from "@/components/hooks";
 import { DndContext, DragOverlay, KeyboardSensor, MouseSensor, TouchSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { api, ApiError } from "@/lib/api-client";
 import { addMonths, formatDateMedium, formatMonthYear, monthKey } from "@/lib/dates";
@@ -60,8 +61,7 @@ export function CoachCalendar({
   const params = useSearchParams();
   const toast = useToast();
   const { locations, today } = useCoach();
-  const [events, setEvents] = useState(initialEvents);
-  useEffect(() => setEvents(initialEvents), [initialEvents]);
+  const [events, setEvents] = useSyncedState(initialEvents);
   const [dragging, setDragging] = useState<ViewEvent | null>(null);
 
   const selectedId = params.get("e");
@@ -91,7 +91,7 @@ export function CoachCalendar({
       const card = toCard(rec, locations);
       return prev.some((e) => e.id === rec.id) ? prev.map((e) => (e.id === rec.id ? card : e)) : [...prev, card];
     }),
-    [locations],
+    [locations, setEvents],
   );
 
   const sensors = useSensors(
@@ -206,6 +206,7 @@ export function CoachCalendar({
       </div>
       {selectedId ? (
         <EventPanel
+          key={selectedId}
           id={selectedId}
           onClose={() => setParam("e", null)}
           onChange={upsert}

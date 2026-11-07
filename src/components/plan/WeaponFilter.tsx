@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
+import { useSyncedState } from "@/components/hooks";
 import { cx } from "@/components/ui";
 import { WEAPONS, WEAPON_LABEL, WEAPON_PREF_COOKIE, type WeaponFilter } from "@/lib/weapons";
 
@@ -51,14 +52,15 @@ export function WeaponFilterControl({
 /** Remembers a reader's weapon on THIS device (cookie, 1 year) — no account needed. */
 export function useWeaponPreference(initial: WeaponFilter, opts: { refresh?: boolean } = {}) {
   const router = useRouter();
-  const [weapon, setWeapon] = useState<WeaponFilter>(initial);
+  // Stays in sync when the server re-renders with a new preference (another picker changed it).
+  const [weapon, setWeapon] = useSyncedState<WeaponFilter>(initial);
   const update = useCallback(
     (w: WeaponFilter) => {
       setWeapon(w);
       document.cookie = `${WEAPON_PREF_COOKIE}=${w}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax`;
       if (opts.refresh) router.refresh();
     },
-    [router, opts.refresh],
+    [router, opts.refresh, setWeapon],
   );
   return [weapon, update] as const;
 }

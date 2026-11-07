@@ -142,3 +142,18 @@ describe("iCalendar import", () => {
     expect(report.counts.events.created).toBe(3);
   });
 });
+
+describe("portability", () => {
+  it("an export imported into a fresh installation can be re-imported without duplicates", async () => {
+    const admin = await makeUser("admin", "admin@example.org");
+    await runImport(admin, example, { dryRun: false });
+    const exported = await exportAll();
+    await resetDb(); // simulate a brand-new installation
+    const admin2 = await makeUser("admin", "admin2@example.org");
+    const first = await runImport(admin2, exported, { dryRun: false });
+    expect(first.counts.events.created).toBe(3);
+    const second = await runImport(admin2, exported, { dryRun: false });
+    expect(second.counts.events.created).toBe(0);
+    expect(await listEvents({ from: "2026-12-01", to: "2026-12-31" })).toHaveLength(3);
+  });
+});
