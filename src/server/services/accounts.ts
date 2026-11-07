@@ -3,8 +3,8 @@ import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/server/db";
 import { authTokens, users } from "@/server/db/schema";
 import { generateToken, getDummyHash, hashPassword, needsRehash, safeEqual, sha256Hex, verifyPassword } from "@/server/auth/crypto";
-import { createSession, invalidateUserSessions, type SessionUser } from "@/server/auth/sessions";
-import { enforceRateLimits, resetRateLimit } from "@/server/auth/rate-limit";
+import { createSession, invalidateUserSessions, purgeExpiredSessions, type SessionUser } from "@/server/auth/sessions";
+import { enforceRateLimits, purgeOldRateLimits, resetRateLimit } from "@/server/auth/rate-limit";
 import { AppError, badRequest, forbidden, notFound } from "@/server/errors";
 import { audit } from "@/server/audit";
 import { emailEnabled, sendEmail } from "@/server/email";
@@ -101,6 +101,8 @@ export async function login(
   const updates: Partial<typeof users.$inferInsert> = { lastLoginAt: sql`now()` as unknown as string };
   if (needsRehash(user.passwordHash)) updates.passwordHash = await hashPassword(password);
   await db.update(users).set(updates).where(eq(users.id, user.id));
+  // Occasional housekeeping instead of a scheduled job: expired sessions and stale rate-limit windows.
+  if (Math.random() < 0.1) await Promise.all([purgeExpiredSessions(), purgeOldRateLimits()]).catch(() => {});
   const session = await createSession(user.id, meta.userAgent);
   return { user: { id: user.id, email: user.email, name: user.name, role: user.role }, ...session };
 }

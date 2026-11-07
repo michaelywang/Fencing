@@ -36,6 +36,11 @@ export async function enforceRateLimits(checks: Array<{ key: string; limit: numb
   }
 }
 
+/** Housekeeping: drop rate-limit windows older than a day. */
+export async function purgeOldRateLimits(): Promise<void> {
+  await getDb().execute(sql`DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'`);
+}
+
 export async function resetRateLimit(key: string): Promise<void> {
   await getDb().delete(rateLimits).where(eq(rateLimits.key, key));
 }
