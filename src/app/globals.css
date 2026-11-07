@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ * ---------------------------------------------------------------------------
+ * SCHOOL COLORS: Governor Livingston dark red and blue.
+ * WEAPON COLORS: change the three weapon blocks below to restyle every weapon
+ * label, chip, lane, and card in the app (each weapon has a solid color for
+ * chips/text-on-white, a soft background, and a dark "ink" for text on soft).
+ * Keep white text readable on the solid color (contrast ≥ 4.5:1).
+ */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+
+  /* GL school colors */
+  --color-gl-red: #8a1c2b;
+  --color-gl-red-dark: #6a1220;
+  --color-gl-red-soft: #f9ecee;
+  --color-gl-blue: #1d3a6e;
+  --color-gl-blue-dark: #12284f;
+  --color-gl-blue-soft: #e9eef8;
+
+  /* WEAPON COLORS — foil */
+  --color-foil: #b45309;
+  --color-foil-soft: #fef3c7;
+  --color-foil-ink: #713f12;
+  /* WEAPON COLORS — épée */
+  --color-epee: #047857;
+  --color-epee-soft: #d1fae5;
+  --color-epee-ink: #064e3b;
+  /* WEAPON COLORS — saber */
+  --color-saber: #6d28d9;
+  --color-saber-soft: #ede9fe;
+  --color-saber-ink: #4c1d95;
+  /* Shared (everyone together) */
+  --color-shared: #475569;
+  --color-shared-soft: #f1f5f9;
+  --color-shared-ink: #1e293b;
+}
+
+:root {
+  color-scheme: light;
+  --focus-ring: #1d4ed8;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: #f6f7f9;
+  color: #111827;
+  font-family: var(--font-sans);
+}
+
+/* Visible keyboard focus everywhere (never removed). */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.on-dark :focus-visible {
+  outline-color: #fde68a;
+}
+
+/* Comfortable touch targets on coarse pointers (phones, iPad). */
+@media (pointer: coarse) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Native dialog styling */
+dialog {
+  padding: 0;
+  border: none;
+  border-radius: 0.75rem;
+  max-width: min(640px, calc(100vw - 2rem));
+  width: 100%;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.35);
+}
+dialog::backdrop {
+  background: rgb(15 23 42 / 0.45);
+}
+
+details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Subtle claymore watermark used in the header. */
+.claymore-mark {
+  opacity: 0.9;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

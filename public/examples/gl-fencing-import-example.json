@@ -1,0 +1,121 @@
+{
+  "format": "gl-fencing-plan",
+  "version": 1,
+  "drills": [
+    {
+      "key": "example-footwork-ladder",
+      "title": "EXAMPLE – Footwork ladder",
+      "weapons": [],
+      "category": "footwork",
+      "skills": ["footwork", "distance"],
+      "level": "all",
+      "durationMin": 20,
+      "objective": "Rhythm changes and a balanced recovery from the lunge.",
+      "steps": ["2 advances, 1 retreat (x6)", "Advance-lunge-recover (x8)", "Slow, slow, QUICK advance (x6)"],
+      "cues": ["Push from the back leg", "Recover to en garde"],
+      "variations": { "beginner": "Steady tempo only", "experienced": "Add balestra" }
+    },
+    {
+      "key": "example-foil-parry4",
+      "title": "EXAMPLE – Parry 4 riposte",
+      "weapons": ["foil"],
+      "category": "technical",
+      "skills": ["parry-riposte"],
+      "level": "beginner",
+      "durationMin": 25,
+      "equipment": ["Masks", "Foils"],
+      "objective": "Small parry, immediate riposte.",
+      "steps": ["Partner extends to the inside line", "Parry 4 with the fingers", "Riposte direct"],
+      "partnerRoles": "Attacker feeds honest attacks; switch every 5.",
+      "cues": ["Small parry", "Don't pull back"],
+      "successCriteria": "8 of 10 clean ripostes.",
+      "variations": { "beginner": "Stationary", "experienced": "Attacker may disengage", "easier": "Shorter distance", "harder": "Retreat then riposte with a lunge" },
+      "links": [{ "label": "YouTube search", "url": "https://www.youtube.com/results?search_query=foil+parry+4+riposte" }]
+    },
+    {
+      "key": "example-epee-point-control",
+      "title": "EXAMPLE – Point-control ladder",
+      "weapons": ["epee"],
+      "category": "technical",
+      "skills": ["point control"],
+      "level": "all",
+      "durationMin": 25,
+      "steps": ["10 hits stationary", "Advance then extend", "Advance-lunge"],
+      "cues": ["Point leads", "Fingers, not shoulder"]
+    }
+  ],
+  "seasons": [
+    {
+      "name": "EXAMPLE Season",
+      "startDate": "2026-12-07",
+      "endDate": "2027-02-28",
+      "phases": [
+        { "name": "EXAMPLE Foundations", "startDate": "2026-12-07", "endDate": "2026-12-27", "focus": "Footwork and distance.", "color": "sky" },
+        { "name": "EXAMPLE Competition", "startDate": "2026-12-28", "endDate": "2027-02-28", "focus": "Sharpen and compete.", "color": "amber" }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "key": "example-2026-12-07-practice",
+      "kind": "practice",
+      "date": "2026-12-07",
+      "start": "15:30",
+      "end": "18:00",
+      "location": "CMS Gold Gym",
+      "title": "EXAMPLE – Practice",
+      "theme": "Distance and parry-riposte",
+      "intensity": 3,
+      "objectives": ["Hold distance", "Small parries"],
+      "announcement": "Example: bring a water bottle.",
+      "coaches": { "shared": "Coach A", "foil": "Coach A", "epee": "Coach B", "saber": "Coach C" },
+      "blocks": [
+        { "lane": "shared", "duration": 15, "title": "Dynamic warm-up", "category": "warmup" },
+        { "lane": "shared", "duration": 20, "drill": "example-footwork-ladder" },
+        { "lane": "foil", "duration": 25, "drill": "example-foil-parry4" },
+        { "lane": "epee", "duration": 25, "drill": "example-epee-point-control" },
+        { "lane": "saber", "duration": 25, "title": "Parry 5 – head riposte", "category": "technical", "cues": ["Blade above the head"] },
+        { "lane": "foil", "duration": 15, "title": "Right-of-way phrases", "category": "tactical" },
+        { "lane": "epee", "duration": 15, "title": "Counter-attack to the wrist", "category": "tactical" },
+        { "lane": "saber", "duration": 15, "title": "Attack in preparation", "category": "tactical" },
+        { "lane": "shared", "duration": 10, "title": "Water break", "category": "break" },
+        { "lane": "foil", "duration": 50, "title": "Foil bouting", "category": "bouting" },
+        { "lane": "epee", "duration": 50, "title": "Épée bouting", "category": "bouting" },
+        { "lane": "saber", "duration": 50, "title": "Saber bouting", "category": "bouting" },
+        { "lane": "shared", "duration": 10, "title": "Closing circle", "category": "closing" },
+        { "lane": "shared", "duration": 5, "title": "Equipment return", "category": "equipment" }
+      ]
+    },
+    {
+      "key": "example-2026-12-14-practice",
+      "kind": "practice",
+      "date": "2026-12-14",
+      "title": "EXAMPLE – Practice (progression)",
+      "theme": "Parry-riposte progression",
+      "intensity": 4,
+      "blocks": [
+        { "lane": "shared", "duration": 15, "title": "Dynamic warm-up", "category": "warmup" },
+        { "lane": "shared", "duration": 20, "drill": "example-footwork-ladder", "notes": "Week 2: faster calls." },
+        { "lane": "foil", "duration": 40, "drill": "example-foil-parry4", "variations": { "beginner": "Add a step-lunge", "experienced": "Defender answers disengages with counter-6" } },
+        { "lane": "epee", "duration": 40, "drill": "example-epee-point-control" },
+        { "lane": "saber", "duration": 40, "title": "Attack in preparation", "category": "tactical" },
+        { "lane": "shared", "duration": 10, "title": "Water break", "category": "break" },
+        { "lanes": ["foil", "epee", "saber"], "duration": 50, "title": "Pool bouts in weapon groups", "category": "bouting" },
+        { "lane": "shared", "duration": 15, "title": "Closing circle and equipment", "category": "closing" }
+      ]
+    },
+    {
+      "key": "example-2026-12-16-meet",
+      "kind": "meet",
+      "date": "2026-12-16",
+      "start": "16:00",
+      "end": "19:00",
+      "title": "EXAMPLE – Meet at Example HS",
+      "location": "Example High School, 1 Example Rd",
+      "confirmation": "tentative",
+      "intensity": 5,
+      "announcement": "Example: full uniform and body cords.",
+      "meet": { "opponent": "Example HS", "homeAway": "away", "reportTime": "14:30", "busDepart": "14:45", "busReturn": "19:30" }
+    }
+  ]
+}
