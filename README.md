@@ -50,6 +50,7 @@ All content lives in a shared online PostgreSQL database. Routine changes (pract
 
 - **Practices and drills from notes:** give the assistant the prompt from the Import page plus your notes, then upload the JSON it returns (*Import → Check file → Import*).
 - **Meets from an iCal file:** upload the `.ics` on the Import page, or ask for a `gl-fencing-plan` file that adds bus and report times.
+- **Have an assistant enter it directly:** with repository access and the database URL, it can run `npm run import -- <file> --as you@example.com --apply` (see [IMPORT_FORMAT.md](docs/IMPORT_FORMAT.md#direct-import-from-the-command-line-assistant-or-developer)).
 - Imports always arrive as **drafts**. Nothing reaches students until a coach publishes.
 
 ## Local development
@@ -68,6 +69,7 @@ npm run dev                          # http://localhost:3000/setup
 | `npm run db:migrate` · `npm run db:generate` | Apply / create migrations |
 | `npm run db:demo:load -- you@example.com` · `npm run db:demo:remove` | Demo season |
 | `npm run admin -- list \| invite-admin <email> \| reset-link <email>` | Operator CLI (account recovery) |
+| `npm run import -- <file.json\|file.ics> --as <email> [--apply]` | Import planning data as drafts from the command line |
 | `npm test` · `npm run test:e2e` · `npm run lint` · `npm run typecheck` | Quality checks |
 
 ## Tests

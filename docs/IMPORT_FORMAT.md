@@ -150,6 +150,18 @@ Foil, épée and saber blocks at the same time run **in parallel**. The import r
 
 You can also give the .ics file to an AI assistant (or to the developer) and ask for a `gl-fencing-plan` file that, for example, adds bus times from a separate transportation sheet.
 
+## Direct import from the command line (assistant or developer)
+
+Anyone working in this repository with the production `DATABASE_URL` (for example an AI coding assistant you've asked to enter data) can import without the web page. The data still arrives as drafts, credited to a coach account:
+
+```bash
+npm run import -- plan.json --as you@example.com            # dry run: report only, nothing saved
+npm run import -- plan.json --as you@example.com --apply    # import
+npm run import -- meets.ics --as you@example.com --apply    # iCal; add --confirmed or --kind tournament as needed
+```
+
+The database URL is a full-access credential. Share it only with people or tools you trust, and prefer the upload page when that's enough.
+
 ## Export
 
 Administrators can download everything in this same format (*Admin → Data → Download full export*). Use it as a portable backup, or hand it to an AI assistant as context ("here is my current season — propose next week's practices as an import file").
