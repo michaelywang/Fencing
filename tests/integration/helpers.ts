@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "@/server/db";
-import { users } from "@/server/db/schema";
+import { seasons, tracks, users } from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/crypto";
 import type { SessionUser } from "@/server/auth/sessions";
 
@@ -8,15 +8,25 @@ export const CMS_ID = "8d0c6a2e-5b1f-4f57-9a3c-0f3c8a1e2b01";
 export const GL_ID = "8d0c6a2e-5b1f-4f57-9a3c-0f3c8a1e2b02";
 export const SECRET = "PRIVATE-MARKER-c0ffee";
 
-/** Empties all data tables, then restores the default settings/locations rows. */
+export const SEASON_ID = "8d0c6a2e-5b1f-4f57-9a3c-0f3c8a1e2c01";
+export const TRACK_A = "8d0c6a2e-5b1f-4f57-9a3c-0f3c8a1e2d0a";
+
+/**
+ * Empties all data tables (children before parents is irrelevant with CASCADE,
+ * but every table is listed so none is forgotten), then restores the default
+ * settings/locations rows and one season ("2026–27 Season") with Track A.
+ */
 export async function resetDb() {
   const db = getDb();
-  await db.execute(sql`TRUNCATE users, sessions, auth_tokens, rate_limits, audit_log, events, event_revisions, public_events,
-    publish_log, drills, templates, phases, seasons, locations, team_settings RESTART IDENTITY CASCADE`);
+  await db.execute(sql`TRUNCATE users, sessions, auth_tokens, rate_limits, audit_log, operations, clear_batches, backup_slots,
+    backup_snapshots, event_publications, track_baselines, public_events, public_phases, event_revisions, events,
+    logical_events, phases, tracks, publish_log, drills, templates, seasons, locations, team_settings RESTART IDENTITY CASCADE`);
   await db.execute(sql`INSERT INTO team_settings (id, default_practice_location_id, default_meet_location_id) VALUES (1, ${CMS_ID}, ${GL_ID})`);
   await db.execute(sql`INSERT INTO locations (id, name, short_name, kind, sort_order) VALUES
     (${CMS_ID}, 'Columbia Middle School – Gold Gym', 'CMS Gold Gym', 'practice', 1),
     (${GL_ID}, 'Governor Livingston High School – Red Gym', 'GL Red Gym', 'meet', 2)`);
+  await db.insert(seasons).values({ id: SEASON_ID, name: "2026–27 Season", startDate: "2026-08-01", endDate: "2027-07-31" });
+  await db.insert(tracks).values({ id: TRACK_A, seasonId: SEASON_ID, name: "Track A", origin: "empty" });
 }
 
 let hashCache: string | null = null;

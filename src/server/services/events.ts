@@ -1,24 +1,26 @@
 import "server-only";
-import { and, asc, between, desc, eq, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { getDb, type DbOrTx, type Tx } from "@/server/db";
-import { eventRevisions, events, publicEvents, publishLog, users, type EventContent } from "@/server/db/schema";
+import { eventRevisions, events, logicalEvents, publicEvents, trackBaselines, tracks, users, type EventContent } from "@/server/db/schema";
 import { eventDocSchema, type EventDoc } from "@/lib/schemas";
-import { toPublicEvent, type PublicEvent } from "@/lib/projection";
+import type { PublicEvent } from "@/lib/projection";
 import { addDays, diffDays, isISODate } from "@/lib/dates";
 import { newBlockId } from "@/lib/practice";
 import type { PublicationState } from "@/lib/constants";
+import type { EventRecord, LiveInfo } from "@/lib/view";
 import { AppError, ConflictError, badRequest, notFound } from "@/server/errors";
 import type { SessionUser } from "@/server/auth/sessions";
+import { loadProjectionCtx, projectDoc, type ProjectionCtx } from "@/server/live/project";
+import { publicContentHash } from "@/server/live/hash";
 import { getLocation, getSettings } from "./settings";
+import { lockTrack, requireActiveTrack } from "./scope";
+import { isUuid } from "./ids";
 
-type EventRow = typeof events.$inferSelect;
-
-import type { EventRecord } from "@/lib/view";
+export { isUuid };
 export type { EventRecord, EventMeta } from "@/lib/view";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
+export type EventRow = typeof events.$inferSelect;
 
 // ---------------------------------------------------------------------------
 // Row <-> document mapping
@@ -43,49 +45,63 @@ export function rowToDoc(row: EventRow): EventDoc {
   return merged as unknown as EventDoc;
 }
 
-function docToColumns(doc: EventDoc) {
-  const {
-    kind,
-    date,
-    startTime,
-    endTime,
-    title,
-    confirmation,
-    status,
-    locationId,
-    privateNotes,
-    completedNotes,
-    ...content
-  } = doc;
+export function docToColumns(doc: EventDoc) {
+  const { kind, date, startTime, endTime, title, confirmation, status, locationId, privateNotes, completedNotes, ...content } = doc;
+  return { kind, date, startTime, endTime, title, confirmation, status, locationId, privateNotes, completedNotes, content: content as EventContent };
+}
+
+interface LiveJoin {
+  livePayload: PublicEvent | null;
+  liveSourceTrackId: string | null;
+  liveGeneration: number | null;
+  baseline: number | null;
+  trackBaseline: number | null;
+}
+
+/**
+ * Publication state is CONTENT based, so it is meaningful across tracks:
+ * draft = nothing live for this logical event; published = this working copy
+ * would publish exactly what students see now; changed = it differs.
+ */
+export function publicationAndLive(row: EventRow, doc: EventDoc, j: LiveJoin, ctx: ProjectionCtx): { publication: PublicationState; live: LiveInfo } {
+  const generation = j.liveGeneration ?? 0;
+  const baseline = j.baseline ?? j.trackBaseline ?? 0;
+  if (!j.livePayload) {
+    return {
+      publication: "draft",
+      live: { present: false, date: null, startTime: null, status: null, sourceTrackId: null, generation, changedSinceBaseline: generation > baseline },
+    };
+  }
+  const mine = projectDoc(ctx, { logicalId: row.logicalId, timezone: row.timezone, doc, publishedAt: "" });
+  const same = publicContentHash(mine) === publicContentHash(j.livePayload);
   return {
-    kind,
-    date,
-    startTime,
-    endTime,
-    title,
-    confirmation,
-    status,
-    locationId,
-    privateNotes,
-    completedNotes,
-    content: content as EventContent,
+    publication: same ? "published" : "changed",
+    live: {
+      present: true,
+      date: j.livePayload.date,
+      startTime: j.livePayload.startTime,
+      status: j.livePayload.status,
+      sourceTrackId: j.liveSourceTrackId,
+      generation,
+      changedSinceBaseline: !same && generation > baseline,
+    },
   };
 }
 
-function publicationOf(row: Pick<EventRow, "publishedVersion" | "version">): PublicationState {
-  if (row.publishedVersion == null) return "draft";
-  return row.publishedVersion === row.version ? "published" : "changed";
-}
-
-function toRecord(row: EventRow, names: { createdByName?: string | null; updatedByName?: string | null } = {}): EventRecord {
+function toRecord(row: EventRow, j: LiveJoin, ctx: ProjectionCtx, names: { createdByName?: string | null; updatedByName?: string | null } = {}): EventRecord {
+  const doc = rowToDoc(row);
+  const { publication, live } = publicationAndLive(row, doc, j, ctx);
   return {
-    ...rowToDoc(row),
+    ...doc,
     id: row.id,
+    trackId: row.trackId,
+    logicalId: row.logicalId,
+    live,
     timezone: row.timezone,
     version: row.version,
     publishedVersion: row.publishedVersion,
-    publishedAt: row.publishedAt,
-    publication: publicationOf(row),
+    publishedAt: j.livePayload?.publishedAt ?? null,
+    publication,
     isDemo: row.isDemo,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -99,15 +115,30 @@ function toRecord(row: EventRow, names: { createdByName?: string | null; updated
 const creator = alias(users, "creator");
 const updater = alias(users, "updater");
 
-async function selectRecords(db: DbOrTx, where: ReturnType<typeof and>): Promise<EventRecord[]> {
+export async function selectRecords(db: DbOrTx, where: SQL | undefined, ctx?: ProjectionCtx): Promise<EventRecord[]> {
   const rows = await db
-    .select({ row: events, createdByName: creator.name, updatedByName: updater.name })
+    .select({
+      row: events,
+      createdByName: creator.name,
+      updatedByName: updater.name,
+      livePayload: publicEvents.payload,
+      liveSourceTrackId: publicEvents.sourceTrackId,
+      liveGeneration: logicalEvents.liveGeneration,
+      baseline: trackBaselines.seenGeneration,
+      trackBaseline: tracks.baselineGeneration,
+    })
     .from(events)
+    .innerJoin(tracks, eq(tracks.id, events.trackId))
+    .innerJoin(logicalEvents, eq(logicalEvents.id, events.logicalId))
+    .leftJoin(publicEvents, eq(publicEvents.logicalId, events.logicalId))
+    .leftJoin(trackBaselines, and(eq(trackBaselines.trackId, events.trackId), eq(trackBaselines.logicalId, events.logicalId)))
     .leftJoin(creator, eq(creator.id, events.createdBy))
     .leftJoin(updater, eq(updater.id, events.updatedBy))
     .where(where)
     .orderBy(asc(events.date), sql`${events.startTime} NULLS FIRST`, asc(events.createdAt));
-  return rows.map((r) => toRecord(r.row, r));
+  if (rows.length === 0) return [];
+  const projection = ctx ?? (await loadProjectionCtx(db));
+  return rows.map((r) => toRecord(r.row, r, projection, r));
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +181,7 @@ export function changedFields(a: EventDoc, b: EventDoc): string[] {
 
 const COALESCE_MINUTES = 10;
 
-async function recordRevision(
+export async function recordRevision(
   tx: Tx,
   input: { eventId: string; version: number; action: string; summary: string; snapshot: EventDoc; userId: string | null; coalesce?: boolean },
 ) {
@@ -161,12 +192,7 @@ async function recordRevision(
       .where(eq(eventRevisions.eventId, input.eventId))
       .orderBy(desc(eventRevisions.createdAt))
       .limit(1);
-    if (
-      latest &&
-      latest.action === "edit" &&
-      latest.userId === input.userId &&
-      Date.now() - new Date(latest.updatedAt).getTime() < COALESCE_MINUTES * 60_000
-    ) {
+    if (latest && latest.action === "edit" && latest.userId === input.userId && Date.now() - new Date(latest.updatedAt).getTime() < COALESCE_MINUTES * 60_000) {
       const merged = [...new Set([...latest.summary.split(", ").filter(Boolean), ...input.summary.split(", ").filter(Boolean)])].join(", ");
       await tx
         .update(eventRevisions)
@@ -185,20 +211,16 @@ async function recordRevision(
   });
 }
 
-async function lockRow(tx: Tx, id: string): Promise<EventRow> {
+export async function lockRow(tx: Tx, id: string, opts: { allowDeleted?: boolean } = {}): Promise<EventRow> {
   if (!isUuid(id)) throw notFound("Event not found.");
   const [row] = await tx.select().from(events).where(eq(events.id, id)).for("update").limit(1);
-  if (!row || row.deletedAt) throw notFound("Event not found. It may have been deleted.");
+  if (!row || (row.deletedAt && !opts.allowDeleted)) throw notFound("Event not found. It may have been deleted or cleared.");
   return row;
 }
 
-async function conflictFor(tx: Tx, row: EventRow): Promise<ConflictError> {
-  const [names] = await tx
-    .select({ updatedByName: users.name })
-    .from(users)
-    .where(eq(users.id, row.updatedBy ?? "00000000-0000-0000-0000-000000000000"))
-    .limit(1);
-  return new ConflictError({ current: toRecord(row, { updatedByName: names?.updatedByName ?? null }) });
+export async function conflictFor(tx: Tx, row: EventRow): Promise<ConflictError> {
+  const [rec] = await selectRecords(tx, eq(events.id, row.id));
+  return new ConflictError({ current: rec });
 }
 
 async function validateRefs(db: DbOrTx, doc: EventDoc) {
@@ -208,12 +230,19 @@ async function validateRefs(db: DbOrTx, doc: EventDoc) {
 }
 
 // ---------------------------------------------------------------------------
-// Queries
+// Queries (always within one track)
 // ---------------------------------------------------------------------------
-export async function listEvents(range: { from: string; to: string }, db: DbOrTx = getDb()): Promise<EventRecord[]> {
+export async function listEvents(range: { trackId: string; from: string; to: string }, db: DbOrTx = getDb()): Promise<EventRecord[]> {
   if (!isISODate(range.from) || !isISODate(range.to)) throw badRequest("Invalid date range.");
   if (diffDays(range.from, range.to) > 400) throw badRequest("Date range is too large.");
-  return selectRecords(db, and(isNull(events.deletedAt), between(events.date, range.from, range.to)));
+  if (!isUuid(range.trackId)) throw badRequest("Choose a planning track.");
+  return selectRecords(db, and(eq(events.trackId, range.trackId), isNull(events.deletedAt), between(events.date, range.from, range.to)));
+}
+
+/** Every active event of a track (all dates). Bounded by the bulk-size limit. */
+export async function listTrackEvents(trackId: string, db: DbOrTx = getDb()): Promise<EventRecord[]> {
+  if (!isUuid(trackId)) return [];
+  return selectRecords(db, and(eq(events.trackId, trackId), isNull(events.deletedAt)));
 }
 
 export async function getEvent(id: string, db: DbOrTx = getDb()): Promise<EventRecord | null> {
@@ -222,46 +251,65 @@ export async function getEvent(id: string, db: DbOrTx = getDb()): Promise<EventR
   return rec ?? null;
 }
 
-/** Every non-deleted event (used by the administrator export). */
-export async function listAllEvents(db: DbOrTx = getDb()): Promise<EventRecord[]> {
-  return selectRecords(db, isNull(events.deletedAt));
-}
-
-export async function listTrash(db: DbOrTx = getDb()): Promise<EventRecord[]> {
-  return selectRecords(db, and(isNotNull(events.deletedAt), gte(events.deletedAt, sql`now() - interval '90 days'`)));
-}
-
-export async function listDrafts(fromDate: string, db: DbOrTx = getDb()): Promise<EventRecord[]> {
-  const rows = await selectRecords(db, and(isNull(events.deletedAt), gte(events.date, fromDate)));
-  return rows.filter((r) => r.publication !== "published");
+/** Same logical event in another track (for switching tracks while viewing an event). */
+export async function findVariant(logicalId: string, trackId: string, db: DbOrTx = getDb()): Promise<string | null> {
+  if (!isUuid(logicalId) || !isUuid(trackId)) return null;
+  const [row] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.logicalId, logicalId), eq(events.trackId, trackId), isNull(events.deletedAt)))
+    .limit(1);
+  return row?.id ?? null;
 }
 
 // ---------------------------------------------------------------------------
 // Create / save
 // ---------------------------------------------------------------------------
 export interface CreateOptions {
-  action?: "create" | "duplicate" | "import" | "template";
+  trackId: string;
+  /** Reuse an existing logical identity (another track's variant, an import key, a restore). */
+  logicalId?: string | null;
+  action?: "create" | "duplicate" | "import" | "template" | "copy-track" | "from-published" | "from-backup";
   summary?: string;
   externalRef?: string | null;
   isDemo?: boolean;
+  /** Live generation this row has already reconciled with (copied from another track or from live). */
+  baselineGeneration?: number | null;
 }
 
-export async function createEventTx(tx: Tx, actor: SessionUser | null, input: unknown, opts: CreateOptions = {}): Promise<EventRow> {
+export async function createEventTx(tx: Tx, actor: SessionUser | null, input: unknown, opts: CreateOptions): Promise<EventRow> {
   const doc = eventDocSchema.parse(input);
   await validateRefs(tx, doc);
+  const track = await requireActiveTrack(opts.trackId, tx);
   const settings = await getSettings(tx);
+  let logicalId = opts.logicalId ?? null;
+  if (logicalId) {
+    const [le] = await tx.select().from(logicalEvents).where(eq(logicalEvents.id, logicalId)).limit(1);
+    if (!le) {
+      await tx.insert(logicalEvents).values({ id: logicalId, seasonId: track.seasonId });
+    } else if (le.seasonId !== track.seasonId) {
+      logicalId = null; // identities never cross seasons
+    }
+  }
+  if (!logicalId) {
+    const [le] = await tx.insert(logicalEvents).values({ seasonId: track.seasonId }).returning({ id: logicalEvents.id });
+    logicalId = le.id;
+  }
   const [row] = await tx
     .insert(events)
     .values({
       ...docToColumns(doc),
       timezone: settings.timezone,
       version: 1,
+      trackId: track.id,
+      logicalId,
       externalRef: opts.externalRef ?? null,
       isDemo: opts.isDemo ?? false,
       createdBy: actor?.id ?? null,
       updatedBy: actor?.id ?? null,
     })
     .returning();
+  if (opts.baselineGeneration != null) await setBaselines(tx, track.id, [logicalId], opts.baselineGeneration);
   await recordRevision(tx, {
     eventId: row.id,
     version: 1,
@@ -273,7 +321,18 @@ export async function createEventTx(tx: Tx, actor: SessionUser | null, input: un
   return row;
 }
 
-export async function createEvent(actor: SessionUser, input: unknown, opts: CreateOptions = {}): Promise<EventRecord> {
+export async function setBaselines(tx: Tx, trackId: string, logicalIds: string[], generation: number) {
+  if (logicalIds.length === 0) return;
+  for (let i = 0; i < logicalIds.length; i += 500) {
+    const chunk = logicalIds.slice(i, i + 500);
+    await tx
+      .insert(trackBaselines)
+      .values(chunk.map((logicalId) => ({ trackId, logicalId, seenGeneration: generation })))
+      .onConflictDoUpdate({ target: [trackBaselines.trackId, trackBaselines.logicalId], set: { seenGeneration: sql`greatest(${trackBaselines.seenGeneration}, excluded.seen_generation)` } });
+  }
+}
+
+export async function createEvent(actor: SessionUser, input: unknown, opts: CreateOptions): Promise<EventRecord> {
   const row = await getDb().transaction((tx) => createEventTx(tx, actor, input, opts));
   return (await getEvent(row.id))!;
 }
@@ -288,6 +347,8 @@ export async function saveEventTx(
 ): Promise<{ row: EventRow; changed: string[] }> {
   const doc = eventDocSchema.parse(input);
   const row = await lockRow(tx, id);
+  const [t] = await tx.select({ name: tracks.name, deletedAt: tracks.deletedAt }).from(tracks).where(eq(tracks.id, row.trackId)).limit(1);
+  if (t?.deletedAt) throw new AppError(409, "track_removed", `“${t.name}” was removed, so its events can't be edited. Restore the track from Trash first.`);
   if (baseVersion !== null && row.version !== baseVersion) throw await conflictFor(tx, row);
   const prev = rowToDoc(row);
   const changed = changedFields(prev, doc);
@@ -312,16 +373,13 @@ export async function saveEventTx(
 }
 
 /** Autosave / explicit save with optimistic concurrency (409 ConflictError on a stale baseVersion). */
-export async function saveEvent(
-  actor: SessionUser,
-  id: string,
-  input: { baseVersion: number; doc: unknown },
-): Promise<EventRecord> {
+export async function saveEvent(actor: SessionUser, id: string, input: { baseVersion: number; doc: unknown }): Promise<EventRecord> {
   if (!Number.isInteger(input.baseVersion)) throw badRequest("baseVersion is required.");
   await getDb().transaction((tx) => saveEventTx(tx, actor, id, input.baseVersion, input.doc));
   return (await getEvent(id))!;
 }
 
+/** Move to another date in the SAME track (local wall-clock times kept; logical id/URL unchanged). */
 export async function moveEvent(actor: SessionUser, id: string, input: { baseVersion: number; date: string }): Promise<EventRecord> {
   if (!isISODate(input.date)) throw badRequest("Invalid date.");
   await getDb().transaction(async (tx) => {
@@ -329,210 +387,6 @@ export async function moveEvent(actor: SessionUser, id: string, input: { baseVer
     if (row.version !== input.baseVersion) throw await conflictFor(tx, row);
     const doc = rowToDoc(row);
     await saveEventTx(tx, actor, id, input.baseVersion, { ...doc, date: input.date }, { action: "move", summary: `Moved from ${doc.date} to ${input.date}` });
-  });
-  return (await getEvent(id))!;
-}
-
-// ---------------------------------------------------------------------------
-// Publishing
-// ---------------------------------------------------------------------------
-async function writePublic(tx: Tx, actor: SessionUser | null, row: EventRow, doc: EventDoc, sourceVersion: number) {
-  const settings = await getSettings(tx);
-  const location = doc.locationId ? await getLocation(doc.locationId, tx) : null;
-  const publishedAt = new Date().toISOString();
-  const payload = toPublicEvent(doc, {
-    id: row.id,
-    timezone: row.timezone,
-    location: location ? { name: location.name, shortName: location.shortName, address: location.address } : null,
-    showCoachNames: settings.showCoachNamesPublicly,
-    publishedAt,
-  });
-  await tx
-    .insert(publicEvents)
-    .values({
-      eventId: row.id,
-      date: doc.date,
-      startTime: doc.startTime,
-      kind: doc.kind,
-      status: doc.status,
-      payload,
-      sourceVersion,
-      publishedAt,
-      publishedBy: actor?.id ?? null,
-    })
-    .onConflictDoUpdate({
-      target: publicEvents.eventId,
-      set: { date: doc.date, startTime: doc.startTime, kind: doc.kind, status: doc.status, payload, sourceVersion, publishedAt, publishedBy: actor?.id ?? null },
-    });
-  return publishedAt;
-}
-
-async function logPublish(tx: Tx, actor: SessionUser | null, action: string, note: string, count: number) {
-  await tx.insert(publishLog).values({ userId: actor?.id ?? null, action, note: note.slice(0, 280), eventCount: count });
-}
-
-async function publishRowTx(tx: Tx, actor: SessionUser | null, row: EventRow) {
-  const doc = rowToDoc(row);
-  const publishedAt = await writePublic(tx, actor, row, doc, row.version);
-  await tx.update(events).set({ publishedVersion: row.version, publishedAt }).where(eq(events.id, row.id));
-  await recordRevision(tx, { eventId: row.id, version: row.version, action: "publish", summary: "Published", snapshot: doc, userId: actor?.id ?? null });
-}
-
-/**
- * Publish the CURRENT working copies of the given events (a day or a week).
- * `expectedVersions` lets the caller assert it is publishing what it reviewed.
- */
-export async function publishEvents(
-  actor: SessionUser,
-  ids: string[],
-  opts: { note?: string; expectedVersions?: Record<string, number> } = {},
-): Promise<{ published: number }> {
-  const unique = [...new Set(ids)].filter(isUuid);
-  if (unique.length === 0) throw badRequest("Choose at least one event to publish.");
-  if (unique.length > 100) throw badRequest("Publish at most 100 events at a time.");
-  return getDb().transaction(async (tx) => {
-    const rows = await tx
-      .select()
-      .from(events)
-      .where(and(inArray(events.id, unique), isNull(events.deletedAt)))
-      .orderBy(asc(events.id))
-      .for("update");
-    if (rows.length !== unique.length) throw notFound("Some events no longer exist. Refresh and try again.");
-    for (const row of rows) {
-      const expected = opts.expectedVersions?.[row.id];
-      if (expected !== undefined && expected !== row.version) throw await conflictFor(tx, row);
-      await publishRowTx(tx, actor, row);
-    }
-    await logPublish(tx, actor, "publish", opts.note ?? "", rows.length);
-    return { published: rows.length };
-  });
-}
-
-/** "Save & publish": persist the editor's document and make it public in one transaction. */
-export async function saveAndPublish(
-  actor: SessionUser,
-  id: string,
-  input: { baseVersion: number; doc: unknown; note?: string },
-): Promise<EventRecord> {
-  await getDb().transaction(async (tx) => {
-    const { row } = await saveEventTx(tx, actor, id, input.baseVersion, input.doc);
-    await publishRowTx(tx, actor, row);
-    await logPublish(tx, actor, "publish", input.note ?? "", 1);
-  });
-  return (await getEvent(id))!;
-}
-
-export async function unpublishEvent(actor: SessionUser, id: string, opts: { note?: string } = {}): Promise<EventRecord> {
-  await getDb().transaction(async (tx) => {
-    const row = await lockRow(tx, id);
-    if (row.publishedVersion == null) throw new AppError(409, "not_published", "This event is not published.");
-    await tx.delete(publicEvents).where(eq(publicEvents.eventId, id));
-    await tx.update(events).set({ publishedVersion: null, publishedAt: null }).where(eq(events.id, id));
-    await recordRevision(tx, { eventId: id, version: row.version, action: "unpublish", summary: "Unpublished (removed from the public calendar)", snapshot: rowToDoc(row), userId: actor.id });
-    await logPublish(tx, actor, "unpublish", opts.note ?? "", 1);
-  });
-  return (await getEvent(id))!;
-}
-
-async function latestPublishedSnapshot(tx: Tx, eventId: string): Promise<EventDoc | null> {
-  const [rev] = await tx
-    .select()
-    .from(eventRevisions)
-    .where(and(eq(eventRevisions.eventId, eventId), eq(eventRevisions.action, "publish")))
-    .orderBy(desc(eventRevisions.createdAt))
-    .limit(1);
-  return rev ? eventDocSchema.parse(rev.snapshot) : null;
-}
-
-/** Throw away unpublished edits: the working copy returns to the live public version. */
-export async function discardDraftChanges(actor: SessionUser, id: string, baseVersion?: number): Promise<EventRecord> {
-  await getDb().transaction(async (tx) => {
-    const row = await lockRow(tx, id);
-    if (baseVersion !== undefined && row.version !== baseVersion) throw await conflictFor(tx, row);
-    if (row.publishedVersion == null) throw new AppError(409, "not_published", "Only published events have a public version to return to.");
-    if (row.publishedVersion === row.version) return;
-    const snapshot = await latestPublishedSnapshot(tx, id);
-    if (!snapshot) throw new AppError(409, "no_snapshot", "The published version could not be found in history.");
-    const { row: updated } = await saveEventTx(tx, actor, id, row.version, snapshot, { action: "discard", summary: "Discarded unpublished changes" });
-    await tx.update(events).set({ publishedVersion: updated.version }).where(eq(events.id, id));
-  });
-  return (await getEvent(id))!;
-}
-
-/**
- * Cancel (or reinstate) an event. When `publish` is true and the event is
- * public, ONLY the status/reason of the public version changes — any other
- * unpublished draft edits stay private.
- */
-export async function setCanceled(
-  actor: SessionUser,
-  id: string,
-  input: { canceled: boolean; reason?: string; publish?: boolean; baseVersion?: number },
-): Promise<EventRecord> {
-  await getDb().transaction(async (tx) => {
-    const row = await lockRow(tx, id);
-    if (input.baseVersion !== undefined && row.version !== input.baseVersion) throw await conflictFor(tx, row);
-    const wasInSync = row.publishedVersion != null && row.publishedVersion === row.version;
-    const doc = rowToDoc(row);
-    const reason = (input.reason ?? "").trim().slice(0, 500);
-    const next: EventDoc = { ...doc, status: input.canceled ? "canceled" : "scheduled", cancelReason: input.canceled ? reason : "" };
-    const { row: updated } = await saveEventTx(tx, actor, id, row.version, next, {
-      action: input.canceled ? "cancel" : "reinstate",
-      summary: input.canceled ? `Canceled${reason ? `: ${reason}` : ""}` : "Reinstated (cancellation removed)",
-    });
-    if (input.publish && row.publishedVersion != null) {
-      const published = wasInSync ? doc : (await latestPublishedSnapshot(tx, id)) ?? doc;
-      const patched: EventDoc = { ...published, status: next.status, cancelReason: next.cancelReason };
-      const sourceVersion = wasInSync ? updated.version : row.publishedVersion;
-      const publishedAt = await writePublic(tx, actor, updated, patched, sourceVersion);
-      await tx.update(events).set({ publishedVersion: sourceVersion, publishedAt }).where(eq(events.id, id));
-      await recordRevision(tx, { eventId: id, version: updated.version, action: "publish", summary: input.canceled ? "Published cancellation" : "Published reinstatement", snapshot: patched, userId: actor.id });
-      await logPublish(tx, actor, input.canceled ? "cancel" : "reinstate", reason, 1);
-    }
-  });
-  return (await getEvent(id))!;
-}
-
-// ---------------------------------------------------------------------------
-// Delete / undelete (soft delete with undo)
-// ---------------------------------------------------------------------------
-export async function deleteEvent(actor: SessionUser, id: string): Promise<void> {
-  await getDb().transaction(async (tx) => {
-    const row = await lockRow(tx, id);
-    const [pub] = await tx.select().from(publicEvents).where(eq(publicEvents.eventId, id)).limit(1);
-    if (pub) await tx.delete(publicEvents).where(eq(publicEvents.eventId, id));
-    await tx
-      .update(events)
-      .set({ deletedAt: sql`now()`, deletedBy: actor.id, deletedPublicPayload: pub?.payload ?? null })
-      .where(eq(events.id, id));
-    await recordRevision(tx, { eventId: id, version: row.version, action: "delete", summary: pub ? "Deleted (and removed from the public calendar)" : "Deleted", snapshot: rowToDoc(row), userId: actor.id });
-    if (pub) await logPublish(tx, actor, "delete", "", 1);
-  });
-}
-
-export async function undeleteEvent(actor: SessionUser, id: string): Promise<EventRecord> {
-  if (!isUuid(id)) throw notFound("Event not found.");
-  await getDb().transaction(async (tx) => {
-    const [row] = await tx.select().from(events).where(eq(events.id, id)).for("update").limit(1);
-    if (!row) throw notFound("Event not found.");
-    if (!row.deletedAt) return;
-    const payload = row.deletedPublicPayload as PublicEvent | null;
-    if (payload && row.publishedVersion != null) {
-      await tx.insert(publicEvents).values({
-        eventId: id,
-        date: payload.date,
-        startTime: payload.startTime,
-        kind: payload.kind,
-        status: payload.status,
-        payload,
-        sourceVersion: row.publishedVersion,
-        publishedAt: payload.publishedAt,
-        publishedBy: actor.id,
-      });
-    }
-    await tx.update(events).set({ deletedAt: null, deletedBy: null, deletedPublicPayload: null }).where(eq(events.id, id));
-    await recordRevision(tx, { eventId: id, version: row.version, action: "undelete", summary: payload ? "Restored from trash (public version restored)" : "Restored from trash", snapshot: rowToDoc(row), userId: actor.id });
-    if (payload) await logPublish(tx, actor, "undelete", "", 1);
   });
   return (await getEvent(id))!;
 }
@@ -569,12 +423,8 @@ export async function getRevision(eventId: string, revisionId: string) {
   return rev ?? null;
 }
 
-export async function restoreRevision(
-  actor: SessionUser,
-  eventId: string,
-  revisionId: string,
-  baseVersion?: number,
-): Promise<EventRecord> {
+/** Restores an old version as a NEW version of the working copy (private; publish separately). */
+export async function restoreRevision(actor: SessionUser, eventId: string, revisionId: string, baseVersion?: number): Promise<EventRecord> {
   const rev = await getRevision(eventId, revisionId);
   if (!rev) throw notFound("That version could not be found.");
   await getDb().transaction(async (tx) => {
@@ -587,7 +437,7 @@ export async function restoreRevision(
 }
 
 // ---------------------------------------------------------------------------
-// Duplication
+// Duplication to NEW dates (intentional resets; distinct from faithful track copies)
 // ---------------------------------------------------------------------------
 export interface CopyOptions {
   copyCoaches?: boolean;
@@ -598,7 +448,8 @@ export interface CopyOptions {
  * Prepare a copy of a document for a new date. Times are LOCAL wall-clock
  * times, so they are preserved exactly across daylight-saving changes.
  * Private notes and coach assignments are only copied when asked; completed
- * notes and cancellation never carry over.
+ * notes and cancellation never carry over. (Track duplication does NOT use
+ * this — it copies documents faithfully.)
  */
 export function prepareCopy(doc: EventDoc, date: string, opts: CopyOptions = {}): EventDoc {
   return {
@@ -618,11 +469,7 @@ export function prepareCopy(doc: EventDoc, date: string, opts: CopyOptions = {})
   };
 }
 
-export async function duplicateEvent(
-  actor: SessionUser,
-  id: string,
-  input: { dates: string[] } & CopyOptions,
-): Promise<string[]> {
+export async function duplicateEvent(actor: SessionUser, id: string, input: { dates: string[] } & CopyOptions): Promise<string[]> {
   const dates = [...new Set(input.dates ?? [])];
   if (dates.length === 0 || dates.length > 60 || !dates.every(isISODate)) throw badRequest("Choose between 1 and 60 valid dates.");
   const source = await getEvent(id);
@@ -631,6 +478,7 @@ export async function duplicateEvent(
     const ids: string[] = [];
     for (const date of dates.sort()) {
       const row = await createEventTx(tx, actor, prepareCopy(source, date, input), {
+        trackId: source.trackId,
         action: "duplicate",
         summary: `Copied from ${source.date}`,
       });
@@ -642,17 +490,19 @@ export async function duplicateEvent(
 
 export async function duplicateWeek(
   actor: SessionUser,
-  input: { sourceWeekStart: string; targetWeekStart: string } & CopyOptions,
+  input: { trackId: string; sourceWeekStart: string; targetWeekStart: string } & CopyOptions,
 ): Promise<string[]> {
   if (!isISODate(input.sourceWeekStart) || !isISODate(input.targetWeekStart)) throw badRequest("Invalid week.");
   const shift = diffDays(input.sourceWeekStart, input.targetWeekStart);
   if (shift === 0) throw badRequest("Choose a different target week.");
-  const sources = await listEvents({ from: input.sourceWeekStart, to: addDays(input.sourceWeekStart, 6) });
+  const sources = await listEvents({ trackId: input.trackId, from: input.sourceWeekStart, to: addDays(input.sourceWeekStart, 6) });
   if (sources.length === 0) throw badRequest("There are no events in the source week.");
   return getDb().transaction(async (tx) => {
+    await lockTrack(tx, input.trackId);
     const ids: string[] = [];
     for (const src of sources) {
       const row = await createEventTx(tx, actor, prepareCopy(src, addDays(src.date, shift), input), {
+        trackId: input.trackId,
         action: "duplicate",
         summary: `Copied with week of ${input.sourceWeekStart}`,
       });
@@ -660,4 +510,10 @@ export async function duplicateWeek(
     }
     return ids;
   });
+}
+
+/** Rows by id (any state), for bulk services. */
+export async function rowsByIds(tx: DbOrTx, ids: string[]): Promise<EventRow[]> {
+  if (ids.length === 0) return [];
+  return tx.select().from(events).where(inArray(events.id, ids));
 }

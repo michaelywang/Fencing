@@ -1,21 +1,22 @@
 import "server-only";
 import { and, asc, desc, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 import { getDb, type DbOrTx, type Tx } from "@/server/db";
-import { drills, phases, seasons, templates } from "@/server/db/schema";
+import { drills, events, phases, publicEvents, seasons, templates, tracks } from "@/server/db/schema";
 import { drillInputSchema, eventDocSchema, phaseInputSchema, seasonInputSchema, templateInputSchema, type TemplateDoc } from "@/lib/schemas";
 import type { LibraryDrill } from "@/lib/drills";
 import { isISODate } from "@/lib/dates";
 import { WEAPONS } from "@/lib/weapons";
-import { ConflictError, badRequest, notFound } from "@/server/errors";
+import { AppError, ConflictError, badRequest, notFound } from "@/server/errors";
 import type { SessionUser } from "@/server/auth/sessions";
 import { createEvent, getEvent, isUuid, type EventRecord } from "./events";
+import { requireActiveTrack } from "./scope";
 import { getSettings } from "./settings";
 import { newBlockId } from "@/lib/practice";
 import { audit } from "@/server/audit";
 
 type DrillRow = typeof drills.$inferSelect;
 
-function toDrill(row: DrillRow): LibraryDrill & { deletedAt: string | null; externalRef: string | null } {
+function toDrill(row: DrillRow): LibraryDrill & { deletedAt: string | null; externalRef: string | null; trackId: string | null } {
   const parsed = drillInputSchema.safeParse({
     title: row.title,
     weapons: row.weapons,
@@ -46,7 +47,13 @@ function toDrill(row: DrillRow): LibraryDrill & { deletedAt: string | null; exte
     isDemo: row.isDemo,
     deletedAt: row.deletedAt,
     externalRef: row.externalRef,
+    trackId: row.trackId,
   };
+}
+
+/** Shared library rows plus (optionally) one track's local variants. Never another track's. */
+function libraryScope(table: typeof drills | typeof templates, trackId: string | null | undefined): SQL {
+  return trackId && isUuid(trackId) ? sql`(${table.trackId} IS NULL OR ${table.trackId} = ${trackId})` : isNull(table.trackId);
 }
 
 // ---------------------------------------------------------------------------
@@ -61,10 +68,12 @@ export interface DrillFilters {
   equipment?: string;
   tag?: string;
   deleted?: boolean;
+  /** Include this track's track-only drills alongside the shared library. */
+  trackId?: string | null;
 }
 
 export async function listDrills(filters: DrillFilters = {}, db: DbOrTx = getDb()) {
-  const where: SQL[] = [filters.deleted ? isNotNull(drills.deletedAt) : isNull(drills.deletedAt)];
+  const where: SQL[] = [filters.deleted ? isNotNull(drills.deletedAt) : isNull(drills.deletedAt), libraryScope(drills, filters.trackId)];
   const q = filters.q?.trim().slice(0, 100);
   if (q) {
     const like = `%${q.replace(/[%_\\]/g, (c) => "\\" + c)}%`;
@@ -106,17 +115,41 @@ export async function getDrill(id: string, db: DbOrTx = getDb()) {
   return row ? toDrill(row) : null;
 }
 
-export async function createDrillTx(tx: DbOrTx, actor: SessionUser | null, input: unknown, opts: { externalRef?: string | null; isDemo?: boolean } = {}) {
+export async function createDrillTx(
+  tx: DbOrTx,
+  actor: SessionUser | null,
+  input: unknown,
+  opts: { externalRef?: string | null; isDemo?: boolean; trackId?: string | null } = {},
+) {
   const data = drillInputSchema.parse(input);
   const [row] = await tx
     .insert(drills)
-    .values({ ...data, externalRef: opts.externalRef ?? null, isDemo: opts.isDemo ?? false, createdBy: actor?.id ?? null, updatedBy: actor?.id ?? null })
+    .values({ ...data, externalRef: opts.externalRef ?? null, isDemo: opts.isDemo ?? false, trackId: opts.trackId ?? null, createdBy: actor?.id ?? null, updatedBy: actor?.id ?? null })
     .returning();
   return toDrill(row);
 }
 
-export async function createDrill(actor: SessionUser, input: unknown) {
-  return createDrillTx(getDb(), actor, input);
+/** `trackId` set = a track-only drill (experiments never touch the shared library). */
+export async function createDrill(actor: SessionUser, input: unknown, opts: { trackId?: string | null } = {}) {
+  if (opts.trackId) await requireActiveTrack(opts.trackId);
+  return createDrillTx(getDb(), actor, input, { trackId: opts.trackId ?? null });
+}
+
+/** Explicit, separately reviewed step: make a track-only drill part of the shared library. */
+export async function promoteDrill(actor: SessionUser, id: string) {
+  if (!isUuid(id)) throw notFound("Drill not found.");
+  return getDb().transaction(async (tx) => {
+    const [row] = await tx.select().from(drills).where(eq(drills.id, id)).for("update").limit(1);
+    if (!row || row.deletedAt) throw notFound("Drill not found.");
+    if (!row.trackId) return toDrill(row);
+    if (row.externalRef) {
+      const [dup] = await tx.select({ id: drills.id }).from(drills).where(and(isNull(drills.trackId), eq(drills.externalRef, row.externalRef), isNull(drills.deletedAt))).limit(1);
+      if (dup) throw new AppError(409, "key_taken", `The shared library already has a drill with the import key “${row.externalRef}”. Update that drill instead, or rename this key.`);
+    }
+    const [updated] = await tx.update(drills).set({ trackId: null, version: row.version + 1, updatedBy: actor.id, updatedAt: sql`now()` }).where(eq(drills.id, id)).returning();
+    await audit(tx, actor.id, "drill.promoted", { id, fromTrack: row.trackId });
+    return toDrill(updated);
+  });
 }
 
 export async function updateDrillTx(tx: Tx, actor: SessionUser | null, id: string, baseVersion: number | null, input: unknown) {
@@ -179,14 +212,15 @@ const toTemplate = (row: TemplateRow) => ({
   updatedAt: row.updatedAt,
   deletedAt: row.deletedAt,
   externalRef: row.externalRef,
+  trackId: row.trackId,
 });
 export type Template = ReturnType<typeof toTemplate>;
 
-export async function listTemplates(opts: { deleted?: boolean } = {}) {
+export async function listTemplates(opts: { deleted?: boolean; trackId?: string | null } = {}) {
   const rows = await getDb()
     .select()
     .from(templates)
-    .where(opts.deleted ? isNotNull(templates.deletedAt) : isNull(templates.deletedAt))
+    .where(and(opts.deleted ? isNotNull(templates.deletedAt) : isNull(templates.deletedAt), libraryScope(templates, opts.trackId)))
     .orderBy(asc(templates.name));
   return rows.map(toTemplate);
 }
@@ -197,24 +231,55 @@ export async function getTemplate(id: string) {
   return row ? toTemplate(row) : null;
 }
 
-export async function createTemplateTx(tx: DbOrTx, actor: SessionUser | null, input: unknown, opts: { externalRef?: string | null; isDemo?: boolean } = {}) {
+export async function createTemplateTx(
+  tx: DbOrTx,
+  actor: SessionUser | null,
+  input: unknown,
+  opts: { externalRef?: string | null; isDemo?: boolean; trackId?: string | null } = {},
+) {
   const data = templateInputSchema.parse(input);
   const [row] = await tx
     .insert(templates)
-    .values({ name: data.name, description: data.description, doc: data.doc, externalRef: opts.externalRef ?? null, isDemo: opts.isDemo ?? false, createdBy: actor?.id ?? null, updatedBy: actor?.id ?? null })
+    .values({
+      name: data.name,
+      description: data.description,
+      doc: data.doc,
+      externalRef: opts.externalRef ?? null,
+      isDemo: opts.isDemo ?? false,
+      trackId: opts.trackId ?? null,
+      createdBy: actor?.id ?? null,
+      updatedBy: actor?.id ?? null,
+    })
     .returning();
   return toTemplate(row);
 }
 
-export async function createTemplate(actor: SessionUser, input: unknown) {
-  return createTemplateTx(getDb(), actor, input);
+export async function createTemplate(actor: SessionUser, input: unknown, opts: { trackId?: string | null } = {}) {
+  if (opts.trackId) await requireActiveTrack(opts.trackId);
+  return createTemplateTx(getDb(), actor, input, { trackId: opts.trackId ?? null });
+}
+
+export async function promoteTemplate(actor: SessionUser, id: string) {
+  if (!isUuid(id)) throw notFound("Template not found.");
+  return getDb().transaction(async (tx) => {
+    const [row] = await tx.select().from(templates).where(eq(templates.id, id)).for("update").limit(1);
+    if (!row || row.deletedAt) throw notFound("Template not found.");
+    if (!row.trackId) return toTemplate(row);
+    if (row.externalRef) {
+      const [dup] = await tx.select({ id: templates.id }).from(templates).where(and(isNull(templates.trackId), eq(templates.externalRef, row.externalRef), isNull(templates.deletedAt))).limit(1);
+      if (dup) throw new AppError(409, "key_taken", `A shared template already uses the import key “${row.externalRef}”.`);
+    }
+    const [updated] = await tx.update(templates).set({ trackId: null, version: row.version + 1, updatedBy: actor.id, updatedAt: sql`now()` }).where(eq(templates.id, id)).returning();
+    await audit(tx, actor.id, "template.promoted", { id, fromTrack: row.trackId });
+    return toTemplate(updated);
+  });
 }
 
 /** Save an existing practice as a template. Private notes are excluded unless requested. */
 export async function createTemplateFromEvent(
   actor: SessionUser,
   eventId: string,
-  input: { name: string; description?: string; includeNotes?: boolean; includeCoaches?: boolean },
+  input: { name: string; description?: string; includeNotes?: boolean; includeCoaches?: boolean; trackOnly?: boolean },
 ) {
   const ev = await getEvent(eventId);
   if (!ev) throw notFound("Event not found.");
@@ -240,7 +305,7 @@ export async function createTemplateFromEvent(
     })),
     privateNotes: input.includeNotes ? ev.privateNotes : "",
   };
-  return createTemplate(actor, { name: input.name, description: input.description ?? "", doc });
+  return createTemplate(actor, { name: input.name, description: input.description ?? "", doc }, { trackId: input.trackOnly ? ev.trackId : null });
 }
 
 export async function updateTemplate(actor: SessionUser, id: string, input: { baseVersion: number; template: unknown }) {
@@ -269,11 +334,12 @@ export async function setTemplateDeleted(actor: SessionUser, id: string, deleted
   if (!row) throw notFound("Template not found.");
 }
 
-/** Create a new DRAFT practice on `date` from a template (blocks get fresh ids). */
-export async function applyTemplate(actor: SessionUser, id: string, input: { date: string; startTime?: string | null }): Promise<EventRecord> {
+/** Create a new DRAFT practice on `date` in the given track from a template (blocks get fresh ids). */
+export async function applyTemplate(actor: SessionUser, id: string, input: { trackId: string; date: string; startTime?: string | null }): Promise<EventRecord> {
   if (!isISODate(input.date)) throw badRequest("Choose a valid date.");
   const t = await getTemplate(id);
   if (!t || t.deletedAt) throw notFound("Template not found.");
+  if (t.trackId && t.trackId !== input.trackId) throw badRequest("That template belongs to another track.");
   const settings = await getSettings();
   const doc = eventDocSchema.parse({
     ...t.doc,
@@ -283,55 +349,107 @@ export async function applyTemplate(actor: SessionUser, id: string, input: { dat
     locationId: t.doc.locationId ?? settings.defaultPracticeLocationId,
     blocks: t.doc.blocks.map((b) => ({ ...b, id: newBlockId() })),
   });
-  return createEvent(actor, doc, { action: "template", summary: `Created from template “${t.name}”` });
+  return createEvent(actor, doc, { trackId: input.trackId, action: "template", summary: `Created from template “${t.name}”` });
 }
 
 // ---------------------------------------------------------------------------
-// Seasons & phases (public by design: names, dates and focus text)
+// Seasons (workspaces) & track phases
 // ---------------------------------------------------------------------------
-export async function listSeasons() {
+type PhaseRow = typeof phases.$inferSelect;
+
+/** Seasons with the given track's (private) phases. Published phases are read from public_phases. */
+export async function listSeasons(opts: { trackId?: string | null } = {}) {
   const db = getDb();
   const s = await db.select().from(seasons).orderBy(desc(seasons.startDate));
-  const p = await db.select().from(phases).orderBy(asc(phases.startDate));
+  const p: PhaseRow[] = opts.trackId && isUuid(opts.trackId)
+    ? await db.select().from(phases).where(and(eq(phases.trackId, opts.trackId), isNull(phases.deletedAt))).orderBy(asc(phases.startDate))
+    : [];
   return s.map((season) => ({ ...season, phases: p.filter((x) => x.seasonId === season.id) }));
 }
 
-export async function createSeason(actor: SessionUser, input: unknown, opts: { isDemo?: boolean; tx?: DbOrTx } = {}) {
+/** A new season starts with one empty track, "Track A". */
+export async function createSeason(actor: SessionUser | null, input: unknown, opts: { isDemo?: boolean; tx?: DbOrTx } = {}) {
   const data = seasonInputSchema.parse(input);
-  const [row] = await (opts.tx ?? getDb()).insert(seasons).values({ ...data, isDemo: opts.isDemo ?? false }).returning();
-  return row;
+  const run = async (tx: DbOrTx) => {
+    const [row] = await tx.insert(seasons).values({ ...data, isDemo: opts.isDemo ?? false }).returning();
+    await tx.insert(tracks).values({ seasonId: row.id, name: "Track A", origin: "empty", isDemo: opts.isDemo ?? false, createdBy: actor?.id ?? null });
+    return row;
+  };
+  return opts.tx ? run(opts.tx) : getDb().transaction(run);
 }
 
 export async function updateSeason(actor: SessionUser, id: string, input: unknown) {
   if (!isUuid(id)) throw notFound("Season not found.");
+  const raw = (input ?? {}) as Record<string, unknown>;
   const data = seasonInputSchema.parse(input);
-  const [row] = await getDb().update(seasons).set({ ...data, updatedAt: sql`now()` }).where(eq(seasons.id, id)).returning();
+  const patch: Partial<typeof seasons.$inferInsert> = { ...data, updatedAt: sql`now()` as unknown as string };
+  if (typeof raw.publicVisible === "boolean") patch.publicVisible = raw.publicVisible;
+  const [row] = await getDb().update(seasons).set(patch).where(eq(seasons.id, id)).returning();
   if (!row) throw notFound("Season not found.");
   return row;
 }
 
+/** Only an EMPTY season can be deleted (no events in any track or Trash, nothing live). */
 export async function deleteSeason(actor: SessionUser, id: string) {
   if (!isUuid(id)) throw notFound("Season not found.");
   const db = getDb();
-  await db.delete(seasons).where(eq(seasons.id, id));
-  await audit(db, actor.id, "season.deleted", { id });
+  await db.transaction(async (tx) => {
+    const [s] = await tx.select().from(seasons).where(eq(seasons.id, id)).for("update").limit(1);
+    if (!s) throw notFound("Season not found.");
+    const [{ n }] = await tx.select({ n: sql<number>`count(*)::int` }).from(events).innerJoin(tracks, eq(tracks.id, events.trackId)).where(eq(tracks.seasonId, id));
+    const [{ m }] = await tx.select({ m: sql<number>`count(*)::int` }).from(publicEvents).where(eq(publicEvents.seasonId, id));
+    if (n > 0 || m > 0) {
+      throw new AppError(409, "season_not_empty", `This season still has ${n} planned event${n === 1 ? "" : "s"} (including Trash) and ${m} published. Clear it and empty its Trash before deleting the season.`);
+    }
+    await tx.delete(seasons).where(eq(seasons.id, id));
+    await audit(tx, actor.id, "season.deleted", { id, name: s.name });
+  });
 }
 
-export async function createPhase(actor: SessionUser, input: unknown, opts: { isDemo?: boolean; tx?: DbOrTx } = {}) {
+const trackPhaseInput = (input: unknown) => {
+  const raw = (input ?? {}) as Record<string, unknown>;
   const data = phaseInputSchema.parse(input);
-  const [row] = await (opts.tx ?? getDb()).insert(phases).values({ ...data, isDemo: opts.isDemo ?? false }).returning();
+  return { data, trackId: typeof raw.trackId === "string" ? raw.trackId : null };
+};
+
+/** Phases are PLAN-SPECIFIC: they belong to one track and are published separately. */
+export async function createPhase(actor: SessionUser | null, input: unknown, opts: { isDemo?: boolean; tx?: DbOrTx } = {}) {
+  const { data, trackId } = trackPhaseInput(input);
+  const db = opts.tx ?? getDb();
+  const track = await requireActiveTrack(trackId, db);
+  if (track.seasonId !== data.seasonId) throw badRequest("That track belongs to another season.");
+  const [row] = await db.insert(phases).values({ ...data, trackId: track.id, isDemo: opts.isDemo ?? false }).returning();
   return row;
 }
 
 export async function updatePhase(actor: SessionUser, id: string, input: unknown) {
   if (!isUuid(id)) throw notFound("Phase not found.");
   const data = phaseInputSchema.parse(input);
-  const [row] = await getDb().update(phases).set({ ...data, updatedAt: sql`now()` }).where(eq(phases.id, id)).returning();
-  if (!row) throw notFound("Phase not found.");
+  const [cur] = await getDb().select().from(phases).where(eq(phases.id, id)).limit(1);
+  if (!cur || cur.deletedAt) throw notFound("Phase not found.");
+  await requireActiveTrack(cur.trackId);
+  const [row] = await getDb()
+    .update(phases)
+    .set({ name: data.name, startDate: data.startDate, endDate: data.endDate, focus: data.focus, color: data.color, updatedAt: sql`now()` })
+    .where(eq(phases.id, id))
+    .returning();
   return row;
 }
 
+/** Moves the phase to Trash (restorable). */
 export async function deletePhase(actor: SessionUser, id: string) {
   if (!isUuid(id)) throw notFound("Phase not found.");
-  await getDb().delete(phases).where(eq(phases.id, id));
+  const [row] = await getDb().update(phases).set({ deletedAt: sql`now()`, updatedAt: sql`now()` }).where(and(eq(phases.id, id), isNull(phases.deletedAt))).returning({ id: phases.id });
+  if (!row) throw notFound("Phase not found.");
+}
+
+/** A track's phases overlapping a range (coach planning views). */
+export async function listTrackPhasesInRange(trackId: string, from: string, to: string) {
+  if (!isUuid(trackId)) return [];
+  const rows = await getDb()
+    .select()
+    .from(phases)
+    .where(and(eq(phases.trackId, trackId), isNull(phases.deletedAt), sql`${phases.startDate} <= ${to}`, sql`${phases.endDate} >= ${from}`))
+    .orderBy(asc(phases.startDate));
+  return rows.map((ph) => ({ id: ph.id, seasonId: ph.seasonId, name: ph.name, startDate: ph.startDate, endDate: ph.endDate, focus: ph.focus, color: ph.color }));
 }

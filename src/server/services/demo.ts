@@ -1,7 +1,7 @@
 import "server-only";
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db";
-import { drills, events, publishLog, seasons, templates } from "@/server/db/schema";
+import { drills, events, publishLog, seasons, templates, tracks } from "@/server/db/schema";
 import { addDays, dayOfWeek, startOfWeek, todayInTimeZone } from "@/lib/dates";
 import { blockFromDrill, type LibraryDrill } from "@/lib/drills";
 import type { Block } from "@/lib/schemas";
@@ -11,7 +11,8 @@ import { newBlockId } from "@/lib/practice";
 import type { SessionUser } from "@/server/auth/sessions";
 import { audit } from "@/server/audit";
 import { DEMO_COACHES, DEMO_DRILLS, DEMO_TEMPLATE_KEY } from "@/server/demo/content";
-import { createEventTx, getEvent, publishEvents, saveEvent, setCanceled } from "./events";
+import { createEventTx, getEvent, saveEvent } from "./events";
+import { publish, publishPhases, setCanceled } from "./publishing";
 import { createDrillTx, createPhase, createSeason, createTemplateTx } from "./library";
 import { getSettings } from "./settings";
 
@@ -22,11 +23,22 @@ export async function demoStatus() {
   return { events: await count(events), drills: await count(drills), templates: await count(templates), seasons: await count(seasons) };
 }
 
-/** Deletes every demo row (events cascade to revisions and public versions). Real content is untouched. */
+/**
+ * Deletes every demo row. The demo season is deleted with everything it owns
+ * (tracks, events and their history, its live schedule, backups and Trash).
+ * Real seasons, tracks and content are untouched.
+ */
 export async function removeDemoData(actor: SessionUser | null) {
   const db = getDb();
   return db.transaction(async (tx) => {
-    const e = await tx.delete(events).where(eq(events.isDemo, true)).returning({ id: events.id });
+    const e = await tx.delete(events).where(eq(events.isDemo, true)).returning({ id: events.id, logicalId: events.logicalId });
+    // logical identities only demo rows used (outside demo seasons) disappear with their public versions
+    const orphanIds = [...new Set(e.map((r) => r.logicalId))];
+    for (let i = 0; i < orphanIds.length; i += 500) {
+      await tx.execute(sql`
+        DELETE FROM logical_events le WHERE le.id IN (${sql.join(orphanIds.slice(i, i + 500).map((id) => sql`${id}`), sql`, `)})
+          AND NOT EXISTS (SELECT 1 FROM events ev WHERE ev.logical_id = le.id)`);
+    }
     const d = await tx.delete(drills).where(eq(drills.isDemo, true)).returning({ id: drills.id });
     const t = await tx.delete(templates).where(eq(templates.isDemo, true)).returning({ id: templates.id });
     const s = await tx.delete(seasons).where(eq(seasons.isDemo, true)).returning({ id: seasons.id });
@@ -160,8 +172,9 @@ export async function loadDemoData(actor: SessionUser) {
     { name: "Competition (demo)", from: 7 * 7, to: 7 * 13 - 1, color: "amber", focus: "Meet-week rhythm: sharpen, recover, compete." },
     { name: "Championship taper (demo)", from: 7 * 13, to: 7 * 17, color: "rose", focus: "Lower volume, high quality, confidence." },
   ] as const;
+  const [trackA] = await db.select().from(tracks).where(eq(tracks.seasonId, season.id)).orderBy(asc(tracks.sortOrder)).limit(1);
   for (const p of phaseDefs) {
-    await createPhase(actor, { seasonId: season.id, name: p.name, startDate: addDays(weekA, p.from), endDate: addDays(weekA, p.to), focus: p.focus, color: p.color }, { isDemo: true });
+    await createPhase(actor, { seasonId: season.id, trackId: trackA.id, name: p.name, startDate: addDays(weekA, p.from), endDate: addDays(weekA, p.to), focus: p.focus, color: p.color }, { isDemo: true });
   }
 
   const practice = (date: string, title: string, theme: string, intensity: number, specs: Spec[], extra: Record<string, unknown> = {}) => ({
@@ -396,7 +409,7 @@ export async function loadDemoData(actor: SessionUser) {
   await db.transaction(async (tx) => {
     const all = { monA, tueA, wedA, thuA, friA, monB, tueB, meetB, thuB, friB, satB, holidayC, homeMeetC };
     for (const [name, doc] of Object.entries(all)) {
-      const row = await createEventTx(tx, actor, doc, { action: "create", summary: "Created (demo)", isDemo: true });
+      const row = await createEventTx(tx, actor, doc, { trackId: trackA.id, action: "create", summary: "Created (demo)", isDemo: true });
       created[name] = row.id;
     }
     // Demo template
@@ -416,7 +429,8 @@ export async function loadDemoData(actor: SessionUser) {
   const publishIds = Object.entries(created)
     .filter(([name]) => name !== "friA")
     .map(([, id]) => id);
-  await publishEvents(actor, publishIds, { note: "Demo season loaded (sample content)." });
+  await publish(actor, { trackId: trackA.id, mode: "selected", rowIds: publishIds, note: "Demo season loaded (sample content)." });
+  await publishPhases(actor, { trackId: trackA.id });
   await setCanceled(actor, created.thuB, { canceled: true, reason: "Gym unavailable (demo example)", publish: true });
   const fri = await getEvent(created.friB);
   if (fri) {

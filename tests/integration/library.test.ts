@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrill, getDrill, listDrills, updateDrill, setDrillDeleted, createTemplateFromEvent, applyTemplate, drillFacets } from "@/server/services/library";
-import { createEvent, getEvent, saveEvent } from "@/server/services/events";
+import { createEvent as createEventSvc, getEvent, saveEvent } from "@/server/services/events";
+import type { SessionUser } from "@/server/auth/sessions";
 import { blockFromDrill, drillInputFromBlock } from "@/lib/drills";
-import { makeUser, practiceDoc, resetDb, SECRET } from "./helpers";
+import { makeUser, practiceDoc, resetDb, SECRET , TRACK_A } from "./helpers";
+
+const createEvent = (actor: SessionUser, doc: unknown) => createEventSvc(actor, doc, { trackId: TRACK_A });
 
 beforeEach(resetDb);
 
@@ -97,7 +100,7 @@ describe("templates", () => {
     const t = await createTemplateFromEvent(coach, ev.id, { name: "Standard Monday" });
     expect(JSON.stringify(t)).not.toContain(SECRET);
     expect(t.doc.coachAssignments.foil).toBe("");
-    const created = await applyTemplate(coach, t.id, { date: "2026-12-07" });
+    const created = await applyTemplate(coach, t.id, { trackId: TRACK_A, date: "2026-12-07" });
     expect(created.date).toBe("2026-12-07");
     expect(created.publication).toBe("draft");
     expect(created.blocks).toHaveLength(11);

@@ -2,29 +2,32 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { getDb } from "@/server/db";
 import {
-  createEvent,
-  deleteEvent,
-  discardDraftChanges,
+  createEvent as createEventSvc,
   duplicateEvent,
-  duplicateWeek,
+  duplicateWeek as duplicateWeekSvc,
   getEvent,
   listRevisions,
   moveEvent,
-  publishEvents,
   restoreRevision,
-  saveAndPublish,
   saveEvent,
-  setCanceled,
-  undeleteEvent,
-  unpublishEvent,
+  type CreateOptions,
 } from "@/server/services/events";
+import { deleteEvent, discardDraftChanges, publish, saveAndPublish, setCanceled, unpublishEvent } from "@/server/services/publishing";
+import { undeleteEvent } from "@/server/services/trash";
+import type { SessionUser } from "@/server/auth/sessions";
 import { getNextUp, getPublicEvent, getPublicEvents, getPublicMeta } from "@/server/services/public";
 import { ConflictError } from "@/server/errors";
 import { analyzePractice } from "@/lib/timeline";
 import { zonedTimeToUtc } from "@/lib/dates";
-import { makeUser, practiceDoc, resetDb, SECRET } from "./helpers";
+import { makeUser, practiceDoc, resetDb, SECRET, TRACK_A } from "./helpers";
 
 beforeEach(resetDb);
+
+// Everything in this file happens in the season's Track A.
+const createEvent = (actor: SessionUser, doc: unknown, opts: Partial<CreateOptions> = {}) => createEventSvc(actor, doc, { trackId: TRACK_A, ...opts });
+const publishEvents = (actor: SessionUser, ids: string[], opts: { note?: string; expectedVersions?: Record<string, number> } = {}) =>
+  publish(actor, { trackId: TRACK_A, mode: "selected", rowIds: ids, ...opts });
+const duplicateWeek = (actor: SessionUser, input: { sourceWeekStart: string; targetWeekStart: string }) => duplicateWeekSvc(actor, { trackId: TRACK_A, ...input });
 
 describe("drafts and publishing", () => {
   it("new practices are private drafts until published", async () => {
@@ -32,11 +35,11 @@ describe("drafts and publishing", () => {
     const ev = await createEvent(coach, practiceDoc());
     expect(ev.publication).toBe("draft");
     expect(ev.version).toBe(1);
-    expect(await getPublicEvent(ev.id)).toBeNull();
+    expect(await getPublicEvent(ev.logicalId)).toBeNull();
     expect(await getPublicEvents("2026-11-01", "2026-11-30")).toEqual([]);
 
     await publishEvents(coach, [ev.id], { note: "Week 1 posted" });
-    const pub = await getPublicEvent(ev.id);
+    const pub = await getPublicEvent(ev.logicalId);
     expect(pub?.theme).toBe("Parry-riposte foundations");
     expect(JSON.stringify(pub)).not.toContain(SECRET);
     expect((await getEvent(ev.id))?.publication).toBe("published");
@@ -52,10 +55,10 @@ describe("drafts and publishing", () => {
 
     const saved = await saveEvent(coach, ev.id, { baseVersion: ev.version, doc: { ...practiceDoc(), theme: "Distance games (draft)" } });
     expect(saved.publication).toBe("changed");
-    expect((await getPublicEvent(ev.id))?.theme).toBe("Parry-riposte foundations");
+    expect((await getPublicEvent(ev.logicalId))?.theme).toBe("Parry-riposte foundations");
 
     await publishEvents(coach, [ev.id], { expectedVersions: { [ev.id]: saved.version } });
-    expect((await getPublicEvent(ev.id))?.theme).toBe("Distance games (draft)");
+    expect((await getPublicEvent(ev.logicalId))?.theme).toBe("Distance games (draft)");
     expect((await getEvent(ev.id))?.publication).toBe("published");
   });
 
@@ -65,7 +68,7 @@ describe("drafts and publishing", () => {
     await publishEvents(coach, [ev.id]);
     const after = await saveAndPublish(coach, ev.id, { baseVersion: (await getEvent(ev.id))!.version, doc: { ...practiceDoc(), announcement: "Bus at 2:45" } });
     expect(after.publication).toBe("published");
-    expect((await getPublicEvent(ev.id))?.announcement).toBe("Bus at 2:45");
+    expect((await getPublicEvent(ev.logicalId))?.announcement).toBe("Bus at 2:45");
   });
 
   it("discarding draft changes returns the working copy to the published version", async () => {
@@ -83,7 +86,7 @@ describe("drafts and publishing", () => {
     const ev = await createEvent(coach, practiceDoc());
     await publishEvents(coach, [ev.id]);
     await unpublishEvent(coach, ev.id);
-    expect(await getPublicEvent(ev.id)).toBeNull();
+    expect(await getPublicEvent(ev.logicalId)).toBeNull();
     expect((await getEvent(ev.id))?.publication).toBe("draft");
   });
 
@@ -93,7 +96,7 @@ describe("drafts and publishing", () => {
     await publishEvents(coach, [ev.id]);
     const draft = await saveEvent(coach, ev.id, { baseVersion: ev.version, doc: { ...practiceDoc(), theme: "Unfinished idea" } });
     await setCanceled(coach, ev.id, { canceled: true, reason: "Gym unavailable", publish: true, baseVersion: draft.version });
-    const pub = await getPublicEvent(ev.id);
+    const pub = await getPublicEvent(ev.logicalId);
     expect(pub?.status).toBe("canceled");
     expect(pub?.cancelReason).toBe("Gym unavailable");
     expect(pub?.theme).toBe("Parry-riposte foundations"); // draft theme NOT leaked
@@ -163,12 +166,15 @@ describe("history, restore and deletion", () => {
     const coach = await makeUser();
     const ev = await createEvent(coach, practiceDoc());
     await publishEvents(coach, [ev.id]);
-    await deleteEvent(coach, ev.id);
+    await deleteEvent(coach, ev.id, { unpublish: true });
     expect(await getEvent(ev.id)).toBeNull();
-    expect(await getPublicEvent(ev.id)).toBeNull();
-    const back = await undeleteEvent(coach, ev.id);
+    expect(await getPublicEvent(ev.logicalId)).toBeNull();
+    const report = await undeleteEvent(coach, ev.id, { republish: true });
+    expect(report.published).toBe(1);
+    const back = (await getEvent(ev.id))!;
     expect(back.publication).toBe("published");
-    expect((await getPublicEvent(ev.id))?.title).toBe("Practice");
+    expect(back.version).toBeGreaterThan(ev.version); // versions never rewind
+    expect((await getPublicEvent(ev.logicalId))?.title).toBe("Practice");
   });
 });
 

@@ -12,6 +12,8 @@ import { clockTime, isoDate, line, linkSchema, rich, PHASE_COLORS } from "./sche
 
 export const IMPORT_FORMAT = "gl-fencing-plan";
 export const IMPORT_VERSION = 1;
+/** Version of the optional `planningExport` extension written by exports (ignored on import). */
+export const PLANNING_EXPORT_VERSION = 2;
 
 const key = z
   .string()

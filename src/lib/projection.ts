@@ -82,6 +82,13 @@ export interface PublicEvent {
   links: Link[];
   blocks: PublicBlock[];
   publishedAt: string;
+  /** Short public change notice (e.g. a logistics update). Set by the publishing layer, never from private fields. */
+  notice?: PublicNotice | null;
+}
+
+export interface PublicNotice {
+  at: string;
+  text: string;
 }
 
 export interface ProjectionContext {

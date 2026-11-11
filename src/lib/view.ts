@@ -9,8 +9,26 @@ import type { Confirmation, EventKind, EventStatus, PublicationState } from "./c
 import type { Weapon } from "./weapons";
 import { weaponSummaries } from "./practice";
 
+/** What is live for this event's LOGICAL identity, from this track's point of view (coach-only). */
+export interface LiveInfo {
+  present: boolean;
+  date: string | null;
+  startTime: string | null;
+  status: string | null;
+  sourceTrackId: string | null;
+  /** Live generation of the logical event's last public change (0 = never public). */
+  generation: number;
+  /** The live version changed after this track last reconciled with it AND differs from this working copy. */
+  changedSinceBaseline: boolean;
+}
+
 export interface EventMeta {
+  /** Working-copy (row) id — unique per track variant; used in coach URLs. */
   id: string;
+  trackId: string;
+  /** Stable logical identity shared across tracks; the public URL is /e/<logicalId>. */
+  logicalId: string;
+  live: LiveInfo;
   timezone: string;
   version: number;
   publishedVersion: number | null;
