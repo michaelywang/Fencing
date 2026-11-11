@@ -7,6 +7,7 @@ import { EVENT_KIND_LABEL, type EventKind } from "@/lib/constants";
 import type { EventRecord } from "@/lib/view";
 import { Button, Spinner } from "@/components/ui";
 import { Modal, useCoach, useToast } from "./CoachContext";
+import { useTrack } from "./TrackBar";
 
 export function defaultEventDoc(kind: EventKind, date: string, s: ReturnType<typeof useCoach>["settings"]) {
   const isPlan = kind === "practice" || kind === "recovery";
@@ -32,6 +33,7 @@ interface TemplateLite {
 
 /** "+ New" control: blank event of any type, or a practice from a template. Opens the result in the editor. */
 export function NewEventButton({ date, onCreated, compact, label }: { date: string; onCreated: (rec: EventRecord) => void; compact?: boolean; label?: string }) {
+  const { trackId } = useTrack();
   const { settings } = useCoach();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -42,13 +44,13 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    api<{ templates: TemplateLite[] }>("/api/templates")
+    api<{ templates: TemplateLite[] }>(`/api/templates?track=${trackId}`)
       .then((r) => !cancelled && setTemplates(r.templates))
       .catch(() => !cancelled && setTemplates([]));
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, trackId]);
   const openDialog = () => {
     setDay(date);
     setOpen(true);
@@ -57,7 +59,7 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
   async function create(kind: EventKind) {
     setBusy(true);
     try {
-      const r = await api<{ event: EventRecord }>("/api/events", { body: { doc: defaultEventDoc(kind, day, settings) } });
+      const r = await api<{ event: EventRecord }>("/api/events", { body: { trackId, doc: defaultEventDoc(kind, day, settings) } });
       setOpen(false);
       onCreated(r.event);
     } catch (e) {
@@ -70,7 +72,7 @@ export function NewEventButton({ date, onCreated, compact, label }: { date: stri
   async function fromTemplate(id: string) {
     setBusy(true);
     try {
-      const r = await api<{ event: EventRecord }>(`/api/templates/${id}/apply`, { body: { date: day } });
+      const r = await api<{ event: EventRecord }>(`/api/templates/${id}/apply`, { body: { trackId, date: day } });
       setOpen(false);
       onCreated(r.event);
     } catch (e) {

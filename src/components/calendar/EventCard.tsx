@@ -19,6 +19,11 @@ export function EventCardBody({ event, weapon = "all", showStatus, dense }: { ev
         <EventTypeBadge kind={event.kind} compact />
         {canceled ? <CanceledBadge /> : null}
         {event.confirmation === "tentative" ? <TentativeBadge /> : null}
+        {event.notice && !canceled ? (
+          <span className="rounded bg-amber-200 px-1 text-[10px] font-bold uppercase text-amber-950" title={event.notice.text}>
+            Updated
+          </span>
+        ) : null}
         {showStatus && event.publication ? <PublicationBadge state={event.publication} /> : null}
         {event.isDemo && !dense ? <DemoBadge /> : null}
       </span>

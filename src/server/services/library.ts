@@ -186,8 +186,22 @@ export async function updateDrill(actor: SessionUser, id: string, input: { baseV
   return getDb().transaction((tx) => updateDrillTx(tx, actor, id, input.baseVersion, input.drill));
 }
 
+async function assertKeyFree(table: typeof drills | typeof templates, id: string) {
+  const [row] = await getDb().select().from(table).where(eq(table.id, id)).limit(1);
+  if (!row || !row.externalRef) return;
+  const [dup] = await getDb()
+    .select({ id: table.id })
+    .from(table)
+    .where(and(eq(table.externalRef, row.externalRef), isNull(table.deletedAt), row.trackId ? eq(table.trackId, row.trackId) : isNull(table.trackId)))
+    .limit(1);
+  if (dup && dup.id !== id) {
+    throw new AppError(409, "restore_conflict", `An active item already uses the import key “${row.externalRef}”. Restore it from Trash to choose “keep both” or “replace”.`);
+  }
+}
+
 export async function setDrillDeleted(actor: SessionUser, id: string, deleted: boolean) {
   if (!isUuid(id)) throw notFound("Drill not found.");
+  if (!deleted) await assertKeyFree(drills, id);
   const db = getDb();
   const [row] = await db
     .update(drills)
@@ -326,6 +340,7 @@ export async function updateTemplate(actor: SessionUser, id: string, input: { ba
 
 export async function setTemplateDeleted(actor: SessionUser, id: string, deleted: boolean) {
   if (!isUuid(id)) throw notFound("Template not found.");
+  if (!deleted) await assertKeyFree(templates, id);
   const [row] = await getDb()
     .update(templates)
     .set({ deletedAt: deleted ? sql`now()` : null, updatedAt: sql`now()` })

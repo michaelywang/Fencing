@@ -8,11 +8,17 @@ import { startOfWeek, formatWeekRange } from "@/lib/dates";
 import { Button, Notice, cx, inputClass } from "@/components/ui";
 import { CheckboxField } from "@/components/editor/fields";
 import { useCoach, useToast } from "./CoachContext";
+import { useTrack } from "./TrackBar";
 
 interface Report {
   dryRun: boolean;
   ok: boolean;
-  counts: Record<string, { created: number; updated: number }>;
+  target: { seasonName: string; trackName: string; trackId: string } | null;
+  sharedMode: boolean;
+  counts: Record<string, { created: number; updated: number; unchanged: number }>;
+  sharedChanges: string[];
+  identity: { matchedInTrack: number; sharedWithOtherTracks: number; reusedFromTrash: number; brandNew: number };
+  conflicts: string[];
   warnings: string[];
   errors: string[];
   eventDates: string[];
@@ -21,6 +27,8 @@ interface Report {
 export function ImportPage() {
   const toast = useToast();
   const { user } = useCoach();
+  const { trackId, track, season } = useTrack();
+  const [updateShared, setUpdateShared] = useState(false);
   const [tab, setTab] = useState<"json" | "ics">("json");
   const [text, setText] = useState("");
   const [report, setReport] = useState<Report | null>(null);
@@ -45,9 +53,9 @@ export function ImportPage() {
     if (data === null) return;
     setBusy(true);
     try {
-      const r = await api<Report>("/api/import", { body: { data, dryRun } });
+      const r = await api<Report>("/api/import", { body: { data, dryRun, trackId, updateShared } });
       setReport(r);
-      if (!dryRun && r.ok) toast({ message: "Import complete. New and updated events are drafts until you publish them.", tone: "success" });
+      if (!dryRun && r.ok) toast({ message: `Imported into ${r.target?.trackName ?? "the track"}. New and updated events are drafts until you publish them.`, tone: "success" });
     } catch (e) {
       toast({ message: e instanceof ApiError ? e.message : "Import failed.", tone: "error" });
     } finally {
@@ -89,7 +97,11 @@ export function ImportPage() {
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
       <section className="space-y-3">
-        <h1 className="text-xl font-bold text-slate-900">Import</h1>
+        <h1 className="text-xl font-bold text-slate-900">Import into {track?.name ?? "a track"}</h1>
+        <Notice tone="info">
+          Target: <strong>{season?.name} / {track?.name}</strong> (use the track switcher above to import into another track). The same file can go into Track A and Track B independently.
+          Imports never change the public schedule.
+        </Notice>
         <p className="text-sm text-slate-600">
           Bulk-load drills, practice plans, seasons, and meets. Every import is checked first (nothing is saved), then applied in one step — all or nothing. Imported events arrive as <strong>private drafts</strong>; re-importing the same keys updates them instead of duplicating.
         </p>
@@ -141,24 +153,67 @@ export function ImportPage() {
           <textarea className={cx(inputClass, "font-mono text-xs")} rows={14} value={text} onChange={(e) => { setText(e.target.value); setReport(null); }} placeholder='{ "format": "gl-fencing-plan", "version": 1, "drills": [], "events": [] }' />
         </label>
         {parseError ? <Notice tone="error">{parseError}</Notice> : null}
+        <CheckboxField
+          label="Also update the SHARED drill library, templates, venues and season dates from this file"
+          hint="Off (recommended): drills and templates in the file become track-only copies; identical shared ones are reused unchanged. The check lists any shared change it would make."
+          checked={updateShared}
+          onChange={(v) => {
+            setUpdateShared(v);
+            setReport(null);
+          }}
+        />
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" disabled={busy || !text.trim()} onClick={() => run(true)}>
             {busy ? "Checking…" : "1. Check file (nothing is saved)"}
           </Button>
-          <Button variant="publish" disabled={busy || !report || !report.ok || !report.dryRun} onClick={() => window.confirm("Import now? Events arrive as drafts.") && run(false)}>
+          <Button variant="publish" disabled={busy || !report || !report.ok || !report.dryRun} onClick={() => window.confirm(`Import into ${track?.name}? Events arrive as drafts${updateShared ? "; SHARED library items listed in the check will be changed" : ""}.`) && run(false)}>
             2. Import
           </Button>
         </div>
         {report ? (
           <div className={cx("space-y-2 rounded-lg border p-3 text-sm", report.ok ? "border-emerald-300 bg-emerald-50" : "border-red-300 bg-red-50")}>
             <p className="font-bold">{report.dryRun ? (report.ok ? "Check passed — ready to import." : "Check found problems — nothing was saved.") : report.ok ? "Imported." : "Import failed — nothing was saved."}</p>
+            {report.target ? (
+              <p>
+                Target: <strong>{report.target.seasonName} / {report.target.trackName}</strong>
+                {report.sharedMode ? " — shared library changes ENABLED" : " — shared library unchanged"}
+              </p>
+            ) : null}
             <ul className="flex flex-wrap gap-x-4">
-              {Object.entries(report.counts).map(([k, v]) => (
-                <li key={k}>
-                  <strong className="capitalize">{k}</strong>: {v.created} new, {v.updated} updated
-                </li>
-              ))}
+              {Object.entries(report.counts)
+                .filter(([, v]) => v.created || v.updated || v.unchanged)
+                .map(([k, v]) => (
+                  <li key={k}>
+                    <strong className="capitalize">{k}</strong>: {v.created} new, {v.updated} updated, {v.unchanged} unchanged
+                  </li>
+                ))}
             </ul>
+            {report.identity.sharedWithOtherTracks || report.identity.reusedFromTrash ? (
+              <p className="text-slate-700">
+                {report.identity.sharedWithOtherTracks ? `${report.identity.sharedWithOtherTracks} new events are this track's version of events another track already has (same keys → same public link). ` : ""}
+                {report.identity.reusedFromTrash ? `${report.identity.reusedFromTrash} reuse the identity of events in Trash.` : ""}
+              </p>
+            ) : null}
+            {report.sharedChanges.length ? (
+              <div>
+                <p className="font-semibold text-slate-800">Shared library / venues / season</p>
+                <ul className="ml-4 list-disc">
+                  {report.sharedChanges.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {report.conflicts.length ? (
+              <div>
+                <p className="font-semibold text-amber-800">Identity notes ({report.conflicts.length})</p>
+                <ul className="ml-4 max-h-40 list-disc overflow-y-auto">
+                  {report.conflicts.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {report.errors.length ? (
               <div>
                 <p className="font-semibold text-red-800">Errors</p>
@@ -183,7 +238,7 @@ export function ImportPage() {
               <p>
                 Review and publish:{" "}
                 {weeks.map((w) => (
-                  <Link key={w} href={`/coach/week?d=${w}`} className="mr-3 font-semibold text-gl-blue underline">
+                  <Link key={w} href={`/coach/week?d=${w}&track=${trackId}`} className="mr-3 font-semibold text-gl-blue underline">
                     {formatWeekRange(w)}
                   </Link>
                 ))}
@@ -216,9 +271,14 @@ export function ImportPage() {
           <h2 className="text-sm font-bold text-slate-900">Export</h2>
           {user.role === "admin" ? (
             <>
-              <p className="mt-1 text-slate-600">Download everything (drills, templates, seasons, events with private notes) as one JSON file in this same format. Keep it private.</p>
-              <a className="mt-2 inline-block font-semibold text-gl-blue underline" href="/api/admin/export">
-                Download full export
+              <p className="mt-1 text-slate-600">
+                Planning export (working copies with private notes) in this same format. It is not an image of the public schedule — published backups are kept on the Backups page. Keep it private.
+              </p>
+              <a className="mt-2 block font-semibold text-gl-blue underline" href={`/api/admin/export?track=${trackId}`}>
+                Download {track?.name} (importable into any track)
+              </a>
+              <a className="mt-1 block font-semibold text-gl-blue underline" href="/api/admin/export">
+                Download every season and track
               </a>
             </>
           ) : (

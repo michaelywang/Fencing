@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { LocationLite } from "@/lib/view";
+import type { SeasonSummary } from "@/server/services/scope";
 import { cx } from "@/components/ui";
 
 export interface CoachUser {
@@ -26,6 +27,8 @@ interface CoachCtx {
   locations: LocationLite[];
   coachNames: string[];
   today: string;
+  /** Seasons and their planning tracks (coach-only). The SELECTED track lives in the tab's URL. */
+  workspaces: SeasonSummary[];
 }
 
 const Ctx = createContext<CoachCtx | null>(null);

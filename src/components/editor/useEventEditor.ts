@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api-client";
 import type { EventDoc } from "@/lib/schemas";
 import type { EventRecord } from "@/lib/view";
 import { prepareForSave } from "@/lib/prepare";
+import { registerFlusher } from "@/components/coach/saveRegistry";
 
 /**
  * Autosave engine for one event.
@@ -13,6 +14,9 @@ import { prepareForSave } from "@/lib/prepare";
  *  - network failure → "offline": a recovery copy is kept on this device and
  *    saving retries automatically (backoff + when the browser comes back online)
  *  - beforeunload guard while anything is unsaved
+ *  - the recovery copy is keyed by TRACK and working-copy id, so it can never be
+ *    replayed into another track's variant of the same event
+ *  - registers a flusher so switching tracks first saves (or stops)
  */
 export type SaveStatus = "saved" | "dirty" | "saving" | "offline" | "error" | "conflict";
 
@@ -54,24 +58,35 @@ interface Backup {
   at: number;
 }
 
-function readBackup(id: string): Backup | null {
+/** Recovery key: track + working-copy id (`glf.backup.<trackId>.<rowId>`). */
+export const backupKey = (trackId: string, id: string) => `${BACKUP_PREFIX}${trackId}.${id}`;
+
+function readBackup(key: string, legacyId: string): Backup | null {
   try {
-    const raw = localStorage.getItem(BACKUP_PREFIX + id);
+    let raw = localStorage.getItem(key);
+    if (!raw) {
+      // copies written before tracks existed were keyed by the event id alone (that row is in Track A)
+      raw = localStorage.getItem(BACKUP_PREFIX + legacyId);
+      if (raw) {
+        localStorage.setItem(key, raw);
+        localStorage.removeItem(BACKUP_PREFIX + legacyId);
+      }
+    }
     return raw ? (JSON.parse(raw) as Backup) : null;
   } catch {
     return null;
   }
 }
-function writeBackup(id: string, b: Backup) {
+function writeBackup(key: string, b: Backup) {
   try {
-    localStorage.setItem(BACKUP_PREFIX + id, JSON.stringify(b));
+    localStorage.setItem(key, JSON.stringify(b));
   } catch {
     /* storage full or unavailable — the in-memory copy still exists */
   }
 }
-function clearBackup(id: string) {
+function clearBackup(key: string) {
   try {
-    localStorage.removeItem(BACKUP_PREFIX + id);
+    localStorage.removeItem(key);
   } catch {
     /* ignore */
   }
@@ -79,6 +94,7 @@ function clearBackup(id: string) {
 
 export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: EventRecord) => void } = {}) {
   const id = initial.id;
+  const key = backupKey(initial.trackId, id);
   const [record, setRecord] = useState<EventRecord>(initial);
   const [doc, setDoc] = useState<EventDoc>(() => docFromRecord(initial));
   const [status, setStatus] = useState<SaveStatus>("saved");
@@ -110,12 +126,12 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
   // Offer to restore a recovery copy left by an earlier failed save on this device.
   // localStorage is only readable after hydration, so this runs once on mount.
   useEffect(() => {
-    const b = readBackup(id);
+    const b = readBackup(key, id);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of an external store (localStorage) after mount
     if (b && JSON.stringify(b.doc) !== JSON.stringify(docFromRecord(initial))) setBackup(b);
-    else if (b) clearBackup(id);
+    else if (b) clearBackup(key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [key]);
 
   const clearTimers = () => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -141,7 +157,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
         onSavedRef.current?.(res.event);
         if (docRef.current === snapshot) {
           dirtyRef.current = false;
-          clearBackup(id);
+          clearBackup(key);
           setStatusBoth("saved");
         } else {
           setStatusBoth("dirty");
@@ -150,7 +166,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
         return res.event;
       } catch (err) {
         const e = err instanceof ApiError ? err : new ApiError(0, "network", "Network error");
-        writeBackup(id, { doc: docRef.current, baseVersion: versionRef.current, at: Date.now() });
+        writeBackup(key, { doc: docRef.current, baseVersion: versionRef.current, at: Date.now() });
         if (e.isConflict) {
           const current = (e.details as { current?: EventRecord } | null)?.current ?? null;
           setConflict(current);
@@ -172,7 +188,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
     })();
     inFlight.current = p;
     return p;
-  }, [id]);
+  }, [id, key]);
 
   useEffect(() => {
     saveRef.current = save;
@@ -212,11 +228,33 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
       setRecord(rec);
       setConflict(null);
       setError(null);
-      clearBackup(id);
+      clearBackup(key);
       setStatusBoth("saved");
       onSavedRef.current?.(rec);
     },
-    [id],
+    [key],
+  );
+
+  /**
+   * Take only some fields from a newer server copy (e.g. after a quick
+   * logistics update) and keep every other local edit; then save.
+   */
+  const mergeServerFields = useCallback(
+    (rec: EventRecord, fields: Array<keyof EventDoc>) => {
+      const server = docFromRecord(rec);
+      const next = { ...docRef.current } as EventDoc;
+      for (const f of fields) (next as unknown as Record<string, unknown>)[f] = server[f];
+      versionRef.current = rec.version;
+      setRecord(rec);
+      const same = JSON.stringify(next) === JSON.stringify(server);
+      docRef.current = same ? server : next;
+      setDoc(docRef.current);
+      dirtyRef.current = !same;
+      setStatusBoth(same ? "saved" : "dirty");
+      if (!same) void saveRef.current();
+      else clearBackup(key);
+    },
+    [key],
   );
 
   const resolveConflict = useCallback(
@@ -247,9 +285,9 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
   }, [backup, save]);
 
   const discardBackup = useCallback(() => {
-    clearBackup(id);
+    clearBackup(key);
     setBackup(null);
-  }, [id]);
+  }, [key]);
 
   const retry = useCallback(() => {
     retryDelay.current = 3000;
@@ -280,6 +318,23 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
+  // Track switching asks every open editor to save first.
+  useEffect(
+    () =>
+      registerFlusher({
+        label: initial.title || initial.date,
+        flush: async () => {
+          if (timer.current) window.clearTimeout(timer.current);
+          if (inFlight.current) await inFlight.current;
+          if (statusRef.current === "conflict") return false;
+          if (dirtyRef.current) await saveRef.current();
+          return !dirtyRef.current && statusRef.current === "saved";
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [id],
+  );
+
   // Flush on unmount (e.g. closing the side panel) — best effort.
   useEffect(
     () => () => {
@@ -305,6 +360,7 @@ export function useEventEditor(initial: EventRecord, opts: { onSaved?: (rec: Eve
     save,
     retry,
     replaceFromServer,
+    mergeServerFields,
     resolveConflict,
     restoreBackup,
     discardBackup,

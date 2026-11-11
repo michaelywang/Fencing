@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type DbOrTx, type Tx } from "@/server/db";
 import { eventPublications, events, logicalEvents, phases, trackBaselines, tracks, users } from "@/server/db/schema";
-import { AppError, ConflictError, badRequest, notFound } from "@/server/errors";
+import { AppError, badRequest, notFound } from "@/server/errors";
 import type { SessionUser } from "@/server/auth/sessions";
 import type { EventDoc } from "@/lib/schemas";
 import type { PublicEvent, PublicNotice } from "@/lib/projection";

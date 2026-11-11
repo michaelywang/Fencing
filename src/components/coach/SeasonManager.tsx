@@ -24,11 +24,15 @@ interface Season {
   endDate: string;
   notes: string;
   isDemo: boolean;
+  publicVisible: boolean;
   phases: Phase[];
 }
 
-/** Create/edit seasons and training phases (phases are shown publicly on the season overview). */
-export function SeasonManager({ seasons }: { seasons: Season[] }) {
+/**
+ * Create/edit seasons (shared workspaces) and the SELECTED TRACK's training
+ * phases. Phases are plan-specific and private until published from the track.
+ */
+export function SeasonManager({ seasons, trackId, trackName, trackSeasonId, publishedPhases }: { seasons: Season[]; trackId: string | null; trackName: string | null; trackSeasonId: string | null; publishedPhases: number }) {
   const router = useRouter();
   const toast = useToast();
   const { user } = useCoach();
@@ -50,7 +54,14 @@ export function SeasonManager({ seasons }: { seasons: Season[] }) {
     <div className="space-y-4">
       {error ? <Notice tone="error">{error}</Notice> : null}
       {seasons.map((s) => (
-        <SeasonCard key={s.id} season={s} call={call} canDelete={user.role === "admin"} />
+        <SeasonCard
+          key={s.id}
+          season={s}
+          call={call}
+          canDelete={user.role === "admin"}
+          track={s.id === trackSeasonId && trackId ? { id: trackId, name: trackName ?? "" } : null}
+          publishedPhases={s.id === trackSeasonId ? publishedPhases : 0}
+        />
       ))}
       <form
         className="space-y-2 rounded-lg border border-dashed border-slate-300 bg-white p-3"
@@ -73,8 +84,20 @@ export function SeasonManager({ seasons }: { seasons: Season[] }) {
   );
 }
 
-function SeasonCard({ season: s, call, canDelete }: { season: Season; call: (fn: () => Promise<unknown>, ok: string) => Promise<void>; canDelete: boolean }) {
-  const [edit, setEdit] = useState({ name: s.name, startDate: s.startDate, endDate: s.endDate, notes: s.notes });
+function SeasonCard({
+  season: s,
+  call,
+  canDelete,
+  track,
+  publishedPhases,
+}: {
+  season: Season;
+  call: (fn: () => Promise<unknown>, ok: string) => Promise<void>;
+  canDelete: boolean;
+  track: { id: string; name: string } | null;
+  publishedPhases: number;
+}) {
+  const [edit, setEdit] = useState({ name: s.name, startDate: s.startDate, endDate: s.endDate, notes: s.notes, publicVisible: s.publicVisible });
   const [phase, setPhase] = useState({ name: "", startDate: s.startDate, endDate: s.startDate, focus: "", color: "sky" });
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -87,13 +110,33 @@ function SeasonCard({ season: s, call, canDelete }: { season: Season; call: (fn:
             Save
           </Button>
           {canDelete ? (
-            <Button size="sm" variant="danger" onClick={() => window.confirm(`Delete “${s.name}” and its phases? Events are not deleted.`) && call(() => api(`/api/seasons/${s.id}`, { method: "DELETE" }), "Season deleted.")}>
+            <Button size="sm" variant="danger" onClick={() => window.confirm(`Delete the empty season “${s.name}” with its tracks, phases and backups? (Seasons that still have events can't be deleted.)`) && call(() => api(`/api/seasons/${s.id}`, { method: "DELETE" }), "Season deleted.")}>
               Delete
             </Button>
           ) : null}
         </div>
       </div>
-      <h3 className="text-sm font-semibold text-slate-800">Training phases (public)</h3>
+      <label className="flex items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" checked={edit.publicVisible} onChange={(e) => setEdit({ ...edit, publicVisible: e.target.checked })} /> Show this season (name, dates and published phases) on the public Season page — save to apply
+      </label>
+      {!track ? (
+        <p className="text-sm text-slate-600">Phases are planned per track. Switch to one of this season&apos;s tracks to edit its phases.</p>
+      ) : (
+        <>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800">Training phases in {track.name} (private until published)</h3>
+        <span className="text-xs text-slate-600">{publishedPhases} published phase{publishedPhases === 1 ? "" : "s"} live now</span>
+        <Button
+          size="sm"
+          className="ml-auto"
+          onClick={() =>
+            window.confirm(`Replace the PUBLISHED phases of “${s.name}” with ${track.name}'s ${s.phases.length} phase${s.phases.length === 1 ? "" : "s"}? Events are not affected.`) &&
+            call(() => api("/api/publish/phases", { body: { trackId: track.id, operationId: crypto.randomUUID() } }), "Phases published.")
+          }
+        >
+          Publish these phases
+        </Button>
+      </div>
       <ul className="space-y-2">
         {s.phases.map((p) => (
           <PhaseRow key={p.id} phase={p} seasonId={s.id} call={call} />
@@ -103,7 +146,7 @@ function SeasonCard({ season: s, call, canDelete }: { season: Season; call: (fn:
         className="grid gap-2 rounded-md bg-slate-50 p-2 sm:grid-cols-[1fr_auto_auto_auto_auto]"
         onSubmit={(e) => {
           e.preventDefault();
-          void call(() => api("/api/phases", { body: { ...phase, seasonId: s.id } }), "Phase added.");
+          void call(() => api("/api/phases", { body: { ...phase, seasonId: s.id, trackId: track.id } }), "Phase added.");
         }}
       >
         <input aria-label="Phase name" className={inputClass} placeholder="New phase, e.g. Foundations" value={phase.name} onChange={(e) => setPhase({ ...phase, name: e.target.value })} required />
@@ -119,8 +162,10 @@ function SeasonCard({ season: s, call, canDelete }: { season: Season; call: (fn:
         <Button type="submit" size="sm">
           Add phase
         </Button>
-        <textarea aria-label="Phase focus" className={cx(inputClass, "sm:col-span-5")} rows={1} placeholder="Focus for this phase (public)" value={phase.focus} onChange={(e) => setPhase({ ...phase, focus: e.target.value })} />
+        <textarea aria-label="Phase focus" className={cx(inputClass, "sm:col-span-5")} rows={1} placeholder="Focus for this phase (shown publicly once published)" value={phase.focus} onChange={(e) => setPhase({ ...phase, focus: e.target.value })} />
       </form>
+        </>
+      )}
     </section>
   );
 }
@@ -143,7 +188,7 @@ function PhaseRow({ phase: p, seasonId, call }: { phase: Phase; seasonId: string
         <Button size="sm" onClick={() => call(() => api(`/api/phases/${p.id}`, { method: "PUT", body: { ...v, seasonId } }), "Phase saved.")}>
           Save
         </Button>
-        <Button size="sm" variant="danger" aria-label={`Delete phase ${p.name}`} onClick={() => window.confirm(`Delete phase “${p.name}”?`) && call(() => api(`/api/phases/${p.id}`, { method: "DELETE" }), "Phase deleted.")}>
+        <Button size="sm" variant="danger" aria-label={`Delete phase ${p.name}`} onClick={() => window.confirm(`Move phase “${p.name}” to Trash? (The published phases don't change until you publish.)`) && call(() => api(`/api/phases/${p.id}`, { method: "DELETE" }), "Phase moved to Trash.")}>
           ✕
         </Button>
       </div>

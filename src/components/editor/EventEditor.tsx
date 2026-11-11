@@ -20,6 +20,7 @@ import { PlanEditor } from "./PlanEditor";
 import { DetailsForm, NotesForm } from "./DetailsForm";
 import { HistoryPanel } from "./HistoryPanel";
 import { CheckboxField } from "./fields";
+import { LogisticsDialog, PublicHistory } from "./LogisticsDialog";
 
 type Tab = "plan" | "details" | "notes" | "history" | "view";
 
@@ -40,7 +41,10 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
   const { doc, record } = ed;
   const isPlan = PLAN_KINDS.includes(doc.kind);
   const [tab, setTab] = useState<Tab>(isPlan ? "plan" : "details");
-  const [dialog, setDialog] = useState<null | "publish" | "duplicate" | "template" | "cancel" | "delete" | "unpublish" | "discard">(null);
+  const [dialog, setDialog] = useState<null | "publish" | "duplicate" | "template" | "cancel" | "delete" | "unpublish" | "discard" | "logistics">(null);
+  const [liveConflict, setLiveConflict] = useState<null | { retry: (res: "overwrite" | "take-live") => void; message: string }>(null);
+  const [historyTick, setHistoryTick] = useState(0);
+  const tq = `track=${record.trackId}`;
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
   const timeline = useMemo(() => (isPlan && doc.blocks.length ? analyzePractice(doc.blocks, doc.targetMinutes) : null), [isPlan, doc.blocks, doc.targetMinutes]);
@@ -68,12 +72,14 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
     return true;
   }
 
-  async function run(action: () => Promise<void>) {
+  async function run(action: () => Promise<void>, retryWith?: (res: "overwrite" | "take-live") => () => Promise<void>) {
     setBusy(true);
     try {
       await action();
     } catch (e) {
-      if (e instanceof ApiError && e.isConflict) {
+      if (e instanceof ApiError && e.code === "live_conflict" && retryWith) {
+        setLiveConflict({ message: e.message, retry: (res) => void run(retryWith(res)) });
+      } else if (e instanceof ApiError && e.isConflict) {
         toast({ message: "Someone else changed this event. Reload it to see their version.", tone: "error" });
       } else toast({ message: e instanceof ApiError ? e.message : "Something went wrong.", tone: "error" });
     } finally {
@@ -83,21 +89,29 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
     }
   }
 
-  const publish = (note: string) =>
-    run(async () => {
-      if (!(await settle())) return;
-      const r = await api<{ event: EventRecord }>(`/api/events/${record.id}/publish`, { body: { baseVersion: ed.baseVersion(), note } });
+  const publishWith = (note: string, resolution?: "overwrite" | "take-live") => async () => {
+    if (!(await settle())) return;
+    if (resolution === "take-live") {
+      const r = await api<{ event: EventRecord }>(`/api/events/${record.id}/discard`, { body: { baseVersion: ed.baseVersion() } });
       ed.replaceFromServer(r.event);
-      toast({ message: "Published — students see it at the team link now.", tone: "success" });
+      toast({ message: "Updated this track to the published version (your private notes were kept)." });
+      return;
+    }
+    const r = await api<{ event: EventRecord }>(`/api/events/${record.id}/publish`, {
+      body: { baseVersion: ed.baseVersion(), note, resolutions: resolution ? { [record.logicalId]: resolution } : undefined, operationId: crypto.randomUUID() },
     });
+    ed.replaceFromServer(r.event);
+    toast({ message: "Published — students see it at the team link now.", tone: "success" });
+  };
+  const publish = (note: string) => run(publishWith(note), (res) => publishWith(note, res));
 
-  const unpublish = () =>
-    run(async () => {
-      if (!(await settle())) return;
-      const r = await api<{ event: EventRecord }>(`/api/events/${record.id}/unpublish`, { body: {} });
-      ed.replaceFromServer(r.event);
-      toast({ message: "Unpublished — removed from the public calendar." });
-    });
+  const unpublishWith = (resolution?: "overwrite") => async () => {
+    if (!(await settle())) return;
+    const r = await api<{ event: EventRecord }>(`/api/events/${record.id}/unpublish`, { body: { resolutions: resolution ? { [record.logicalId]: resolution } : undefined } });
+    ed.replaceFromServer(r.event);
+    toast({ message: "Unpublished — removed from the public calendar." });
+  };
+  const unpublish = () => run(unpublishWith(), () => unpublishWith("overwrite"));
 
   const discard = () =>
     run(async () => {
@@ -115,34 +129,34 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
       toast({ message: canceled ? (publishNow ? "Canceled — students now see it as canceled." : "Marked canceled (not yet published).") : "Reinstated.", tone: "success" });
     });
 
-  const remove = () =>
+  const remove = (unpublishToo: boolean) =>
     run(async () => {
       await ed.flush().catch(() => null);
-      await api(`/api/events/${record.id}`, { method: "DELETE" });
+      const res = await api<{ unpublished: boolean }>(`/api/events/${record.id}`, { method: "DELETE", body: { unpublish: unpublishToo, operationId: crypto.randomUUID() } });
       const id = record.id;
       onDeleted?.(id);
       toast({
-        message: `Deleted “${displayTitle(doc)}”.`,
+        message: `Moved “${displayTitle(doc)}” to Trash${res.unpublished ? " and removed it from the public schedule" : ""}.`,
         action: {
-          label: "Undo",
+          label: res.unpublished ? "Undo (also republish)" : "Undo",
           onClick: () => {
-            void api<{ event: EventRecord }>(`/api/events/${id}/undelete`, { body: {} })
+            void api<{ event: EventRecord }>(`/api/events/${id}/undelete`, { body: { republish: res.unpublished } })
               .then((r) => {
-                onChange?.(r.event);
-                toast({ message: "Restored.", tone: "success" });
+                if (r.event) onChange?.(r.event);
+                toast({ message: res.unpublished ? "Restored and back on the public schedule." : "Restored.", tone: "success" });
                 router.refresh();
               })
               .catch((e) => toast({ message: e instanceof ApiError ? e.message : "Undo failed — find it in Trash.", tone: "error" }));
           },
         },
       });
-      if (mode === "page") router.push(`/coach/calendar?m=${doc.date.slice(0, 7)}`);
+      if (mode === "page") router.push(`/coach/calendar?m=${doc.date.slice(0, 7)}&${tq}`);
     });
 
   async function openPreview() {
     const w = window.open("about:blank", "_blank");
     await ed.flush();
-    const url = `/coach/preview/${record.id}`;
+    const url = `/coach/preview/${record.id}?${tq}`;
     if (w) w.location.href = url;
     else router.push(url);
   }
@@ -178,7 +192,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
           </div>
           {mode === "panel" ? (
             <div className="flex shrink-0 gap-1">
-              <Link href={`/coach/e/${record.id}`} className="touch-target hidden h-8 items-center rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:inline-flex" onClick={() => void ed.flush()}>
+              <Link href={`/coach/e/${record.id}?${tq}`} className="touch-target hidden h-8 items-center rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:inline-flex" onClick={() => void ed.flush()}>
                 Full page
               </Link>
               <button type="button" aria-label="Close panel" onClick={onClose} className="touch-target flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50">
@@ -209,7 +223,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
             Preview as students see it
           </Button>
           {publication !== "draft" ? (
-            <a href={`/e/${record.id}`} target="_blank" rel="noopener" className="touch-target inline-flex h-8 items-center rounded-md px-2 text-sm font-semibold text-gl-blue underline">
+            <a href={`/e/${record.logicalId}`} target="_blank" rel="noopener" className="touch-target inline-flex h-8 items-center rounded-md px-2 text-sm font-semibold text-gl-blue underline">
               View live ↗
             </a>
           ) : null}
@@ -222,6 +236,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
                 <MenuItem onClick={() => setDialog("duplicate")}>Duplicate to other dates…</MenuItem>
                 <MenuItem onClick={() => setDialog("template")}>Save as template…</MenuItem>
                 <MenuItem onClick={() => setDialog("cancel")}>{doc.status === "canceled" ? "Reinstate event…" : "Cancel event…"}</MenuItem>
+                {record.live.present ? <MenuItem onClick={() => setDialog("logistics")}>Quick logistics update (publish now)…</MenuItem> : null}
                 {publication !== "draft" ? <MenuItem onClick={() => setDialog("unpublish")}>Unpublish (hide from students)</MenuItem> : null}
                 <MenuItem danger onClick={() => setDialog("delete")}>
                   Delete…
@@ -254,6 +269,14 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
             {ed.error}{" "}
             <button type="button" className="font-semibold underline" onClick={ed.retry}>
               Retry now
+            </button>
+          </Notice>
+        ) : null}
+        {record.live.changedSinceBaseline && record.live.present ? (
+          <Notice tone="warn">
+            <strong>The published version changed after this track last matched it</strong> (another coach, another track, a cancellation or a logistics update). Publishing from here will ask before overwriting it.{" "}
+            <button type="button" className="font-semibold underline" onClick={() => setDialog("discard")}>
+              Use the published version in this track…
             </button>
           </Notice>
         ) : null}
@@ -307,7 +330,15 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
               {isPlan ? <PracticePlan event={fromDoc(record.id, doc, locations)} coachView /> : null}
             </div>
           ) : null}
-          {tab === "history" ? <HistoryPanel eventId={record.id} baseVersion={ed.baseVersion} onRestored={ed.replaceFromServer} beforeRestore={() => ed.flush()} /> : null}
+          {tab === "history" ? (
+            <div className="space-y-4">
+              <HistoryPanel eventId={record.id} baseVersion={ed.baseVersion} onRestored={ed.replaceFromServer} beforeRestore={() => ed.flush()} />
+              <section className="space-y-1">
+                <h3 className="text-sm font-bold text-slate-800">Public changes (all tracks)</h3>
+                <PublicHistory key={historyTick} logicalId={record.logicalId} trackId={record.trackId} onUndone={() => void api<{ event: EventRecord }>(`/api/events/${record.id}`).then((r) => ed.mergeServerFields(r.event, ["date", "startTime", "endTime", "locationId", "locationNote", "meet"]))} />
+              </section>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -331,16 +362,41 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
         onClose={() => setDialog(null)}
         onConfirm={discard}
       />
-      <ConfirmDialog
-        open={dialog === "delete"}
-        title="Delete this event?"
-        body={publication === "draft" ? "It moves to Trash. You can undo right away or restore it later from Trash." : "It is removed from the public calendar and moved to Trash. You can undo right away or restore it later from Trash."}
-        confirmLabel="Delete"
-        danger
-        busy={busy}
-        onClose={() => setDialog(null)}
-        onConfirm={remove}
-      />
+      {dialog === "delete" ? <DeleteDialog livePresent={record.live.present} busy={busy} onClose={() => setDialog(null)} onConfirm={remove} /> : null}
+      {dialog === "logistics" ? (
+        <LogisticsDialog
+          logicalId={record.logicalId}
+          rowId={record.id}
+          trackId={record.trackId}
+          beforeOpen={settle}
+          onClose={() => setDialog(null)}
+          onDone={(rec) => {
+            setDialog(null);
+            setHistoryTick((t) => t + 1);
+            if (rec) ed.mergeServerFields(rec, ["date", "startTime", "endTime", "locationId", "locationNote", "meet"]);
+            router.refresh();
+          }}
+        />
+      ) : null}
+      {liveConflict ? (
+        <Modal
+          open
+          onClose={() => setLiveConflict(null)}
+          title="The published version changed"
+          footer={
+            <>
+              <Button onClick={() => setLiveConflict(null)}>Cancel</Button>
+              <Button onClick={() => (liveConflict.retry("take-live"), setLiveConflict(null))}>Update this track to the published version</Button>
+              <Button variant="danger" onClick={() => (liveConflict.retry("overwrite"), setLiveConflict(null))}>
+                Publish mine anyway
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-slate-700">{liveConflict.message}</p>
+          <p className="mt-2 text-sm text-slate-700">Open History → Public changes to see what changed. Nothing has been published yet.</p>
+        </Modal>
+      ) : null}
       {dialog === "cancel" ? <CancelDialog open doc={doc} published={publication !== "draft"} busy={busy} onClose={() => setDialog(null)} onConfirm={cancelEvent} /> : null}
       {dialog === "duplicate" ? (
       <DuplicateDialog
@@ -353,7 +409,7 @@ export function EventEditor({ initial, mode, onClose, onChange, onDeleted, onCre
           setDialog(null);
           onCreated?.();
           router.refresh();
-          toast({ message: `Created ${ids.length} draft ${ids.length === 1 ? "copy" : "copies"}.`, tone: "success", action: ids[0] ? { label: "Open", onClick: () => router.push(`/coach/e/${ids[0]}`) } : undefined });
+          toast({ message: `Created ${ids.length} draft ${ids.length === 1 ? "copy" : "copies"}.`, tone: "success", action: ids[0] ? { label: "Open", onClick: () => router.push(`/coach/e/${ids[0]}?${tq}`) } : undefined });
         }}
       />
       ) : null}
@@ -440,6 +496,37 @@ function PublishDialog({ open, onClose, onConfirm, warnings, changed, busy }: { 
               <CheckboxField label="Publish anyway — these are intentional" checked={ack} onChange={setAck} />
             </div>
           </div>
+        ) : null}
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteDialog({ livePresent, busy, onClose, onConfirm }: { livePresent: boolean; busy: boolean; onClose: () => void; onConfirm: (unpublishToo: boolean) => void }) {
+  const [unpublishToo, setUnpublishToo] = useState(livePresent);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Delete this event?"
+      footer={
+        <>
+          <Button onClick={onClose}>Keep it</Button>
+          <Button variant="danger" onClick={() => onConfirm(livePresent && unpublishToo)} disabled={busy}>
+            {busy ? "Working…" : "Move to Trash"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2 text-sm text-slate-700">
+        <p>This track&apos;s working copy moves to Trash (with its notes and plan). You can undo right away or restore it later.</p>
+        {livePresent ? (
+          <CheckboxField
+            label="Also remove it from the public schedule"
+            hint="Untick to keep the published version for students (e.g. it is still on in another track's plan). To show students it's off, Cancel the event instead."
+            checked={unpublishToo}
+            onChange={setUnpublishToo}
+          />
         ) : null}
       </div>
     </Modal>
@@ -572,12 +659,13 @@ function TemplateDialog({ open, eventId, doc, onClose, beforeSave }: { open: boo
   const [description, setDescription] = useState("");
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeCoaches, setIncludeCoaches] = useState(false);
+  const [trackOnly, setTrackOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   async function submit() {
     setBusy(true);
     try {
       await beforeSave();
-      await api(`/api/events/${eventId}/template`, { body: { name, description, includeNotes, includeCoaches } });
+      await api(`/api/events/${eventId}/template`, { body: { name, description, includeNotes, includeCoaches, trackOnly } });
       toast({ message: `Saved template “${name}”.`, tone: "success" });
       onClose();
     } catch (e) {
@@ -610,6 +698,7 @@ function TemplateDialog({ open, eventId, doc, onClose, beforeSave }: { open: boo
           <textarea className={inputClass} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
         <CheckboxField label="Include coach assignments" checked={includeCoaches} onChange={setIncludeCoaches} />
+        <CheckboxField label="Only for this track" hint="Off: a shared template every track can use." checked={trackOnly} onChange={setTrackOnly} />
         <CheckboxField label="Include private notes" hint="Off by default." checked={includeNotes} onChange={setIncludeNotes} />
       </div>
     </Modal>

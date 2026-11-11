@@ -14,10 +14,11 @@ export const GET = apiRoute("coach", async ({ req }) => {
       tag: p.get("tag") ?? undefined,
       maxDuration: max ? Number(max) : undefined,
       deleted: p.get("deleted") === "1",
+      trackId: p.get("track"),
     }),
   };
 });
 export const POST = apiRoute("coach", async ({ req, user }) => {
-  const body = await readJson<{ drill?: unknown }>(req);
-  return { drill: await createDrill(user, body.drill ?? body) };
+  const body = await readJson<{ drill?: unknown; trackId?: string | null }>(req);
+  return { drill: await createDrill(user, body.drill ?? body, { trackId: body.trackId ?? null }) };
 });

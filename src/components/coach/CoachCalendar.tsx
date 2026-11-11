@@ -19,6 +19,8 @@ import { buttonClass, cx } from "@/components/ui";
 import { useCoach, useToast } from "./CoachContext";
 import { EventPanel } from "./EventPanel";
 import { NewEventButton } from "./NewEventButton";
+import { ClearDialog } from "./ClearDialog";
+import { useTrack } from "./TrackBar";
 
 function DroppableDay({ date, children, className }: DayCellProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `day:${date}`, data: { date } });
@@ -63,6 +65,8 @@ export function CoachCalendar({
   const { locations, today } = useCoach();
   const [events, setEvents] = useSyncedState(initialEvents);
   const [dragging, setDragging] = useState<ViewEvent | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const { track, season } = useTrack();
 
   const selectedId = params.get("e");
   const weapon = parseWeaponFilter(params.get("w"));
@@ -152,7 +156,11 @@ export function CoachCalendar({
             </Link>
           </nav>
           <NewEventButton date={thisMonth ? today : `${monthKey(year, month)}-01`} onCreated={(rec) => { upsert(rec); setParam("e", rec.id); }} />
+          <button type="button" className={buttonClass("danger", "sm")} onClick={() => setClearing(true)}>
+            Clear…
+          </button>
         </div>
+        {clearing && track && season ? <ClearDialog open onClose={() => setClearing(false)} trackId={track.id} trackName={track.name} seasonName={season.name} /> : null}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <WeaponFilterControl value={weapon} onChange={(w) => setParam("w", w === "all" ? null : w)} label="Weapon" size="sm" />
           <div role="group" aria-label="Event types" className="flex flex-wrap items-center gap-1">
@@ -179,7 +187,7 @@ export function CoachCalendar({
           </div>
         </div>
         <p className="text-xs text-slate-500">
-          Drag a card to another day to move it (times stay the same). Striped cards are drafts; dashed borders are tentative.
+          Drag a card to another day to move it (times stay the same). Striped cards are drafts; dashed borders are tentative. The weapon filter only changes what you see here.
         </p>
         <DndContext
           sensors={sensors}

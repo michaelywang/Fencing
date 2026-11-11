@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { getDb, type DbOrTx, type Tx } from "@/server/db";
+import { getDb, type DbOrTx } from "@/server/db";
 import { clearBatches, drills, eventRevisions, events, logicalEvents, phases, publicEvents, templates, tracks, users } from "@/server/db/schema";
 import { AppError, badRequest, forbidden, notFound } from "@/server/errors";
 import type { SessionUser } from "@/server/auth/sessions";
@@ -384,7 +384,10 @@ export async function restoreFromTrash(actor: SessionUser, req: RestoreRequest) 
       const active = seasonTracks.filter((x) => !x.deletedAt || restoredTracks.includes(x.id));
       let name = t.name;
       let n = 2;
-      while (active.some((x) => x.id !== t.id && x.name.toLowerCase() === name.toLowerCase())) name = `${t.name} (restored${n > 2 ? ` ${n - 1}` : ""})`, n++;
+      while (active.some((x) => x.id !== t.id && x.name.toLowerCase() === name.toLowerCase())) {
+        name = `${t.name} (restored${n > 2 ? ` ${n - 1}` : ""})`;
+        n++;
+      }
       await tx.update(tracks).set({ deletedAt: null, deletedBy: null, name, updatedAt: sql`now()` }).where(eq(tracks.id, id));
       t.deletedAt = null;
       t.name = name;

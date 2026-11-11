@@ -23,6 +23,7 @@ import { Button, buttonClass, cx, inputClass } from "@/components/ui";
 import { Modal, useCoach, useToast } from "./CoachContext";
 import { EventPanel } from "./EventPanel";
 import { NewEventButton } from "./NewEventButton";
+import { useTrack } from "./TrackBar";
 
 export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: string; initialRecords: EventRecord[]; phases: PhaseLite[] }) {
   const router = useRouter();
@@ -32,6 +33,7 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
   const { locations, today } = useCoach();
   const [records, setRecords] = useSyncedState(initialRecords);
   const [dialog, setDialog] = useState<null | "publish" | "duplicate">(null);
+  const { trackId } = useTrack();
 
   const selectedId = params.get("e");
   const weapon = parseWeaponFilter(params.get("w"));
@@ -92,9 +94,12 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
             <Button size="sm" variant="publish" onClick={() => setDialog("publish")} disabled={unpublished.length === 0}>
               Publish week{unpublished.length ? ` (${unpublished.length})` : ""}
             </Button>
-            <a className={buttonClass("secondary", "sm")} href={`/coach/preview?week=${weekStart}`} target="_blank" rel="noopener">
+            <a className={buttonClass("secondary", "sm")} href={`/coach/preview?week=${weekStart}&track=${trackId}`} target="_blank" rel="noopener">
               Preview week
             </a>
+            <Link className={buttonClass("secondary", "sm")} href={`/coach/publish?week=${weekStart}&track=${trackId}`}>
+              Review week vs. published…
+            </Link>
             <Button size="sm" onClick={() => setDialog("duplicate")} disabled={records.length === 0}>
               Duplicate week…
             </Button>
@@ -131,8 +136,8 @@ export function CoachWeek({ weekStart, initialRecords, phases }: { weekStart: st
           onCreated={() => router.refresh()}
         />
       ) : null}
-      {dialog === "publish" ? <PublishWeekDialog open records={unpublished} onClose={() => setDialog(null)} onDone={() => { setDialog(null); router.refresh(); }} /> : null}
-      {dialog === "duplicate" ? <DuplicateWeekDialog open weekStart={weekStart} onClose={() => setDialog(null)} onDone={(target) => { setDialog(null); router.push(`/coach/week?d=${target}`); }} /> : null}
+      {dialog === "publish" ? <PublishWeekDialog open records={unpublished} trackId={trackId} weekStart={weekStart} onClose={() => setDialog(null)} onDone={() => { setDialog(null); router.refresh(); }} /> : null}
+      {dialog === "duplicate" ? <DuplicateWeekDialog open weekStart={weekStart} trackId={trackId} onClose={() => setDialog(null)} onDone={(target) => { setDialog(null); router.push(`/coach/week?d=${target}&track=${trackId}`); }} /> : null}
     </div>
   );
 }
@@ -217,8 +222,9 @@ function CoachEventHeader({ event, selected, onOpen, onSave }: { event: ViewEven
   );
 }
 
-function PublishWeekDialog({ open, records, onClose, onDone }: { open: boolean; records: EventRecord[]; onClose: () => void; onDone: () => void }) {
+function PublishWeekDialog({ open, records, trackId, weekStart, onClose, onDone }: { open: boolean; records: EventRecord[]; trackId: string; weekStart: string; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
+  const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(() => new Set(records.map((r) => r.id)));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -226,10 +232,16 @@ function PublishWeekDialog({ open, records, onClose, onDone }: { open: boolean; 
     setBusy(true);
     try {
       const chosen = records.filter((r) => selected.has(r.id));
-      const res = await api<{ published: number }>("/api/publish", { body: { ids: chosen.map((r) => r.id), note, expectedVersions: Object.fromEntries(chosen.map((r) => [r.id, r.version])) } });
-      toast({ message: `Published ${res.published} event${res.published === 1 ? "" : "s"}.`, tone: "success" });
+      const res = await api<{ published: number }>("/api/publish", {
+        body: { trackId, mode: "selected", rowIds: chosen.map((r) => r.id), note, expectedVersions: Object.fromEntries(chosen.map((r) => [r.id, r.version])), operationId: crypto.randomUUID() },
+      });
+      toast({ message: `Published ${res.published} event${res.published === 1 ? "" : "s"}. Other dates are unchanged.`, tone: "success" });
       onDone();
     } catch (e) {
+      if (e instanceof ApiError && e.code === "live_conflict") {
+        toast({ message: e.message, tone: "error", action: { label: "Review", onClick: () => router.push(`/coach/publish?week=${weekStart}&track=${trackId}`) } });
+        return;
+      }
       toast({ message: e instanceof ApiError ? (e.isConflict ? "One of these events changed since you opened the week — refresh and review before publishing." : e.message) : "Publishing failed.", tone: "error" });
     } finally {
       setBusy(false);
@@ -250,7 +262,7 @@ function PublishWeekDialog({ open, records, onClose, onDone }: { open: boolean; 
       }
     >
       <div className="space-y-3 text-sm">
-        <p className="text-slate-600">Publishes the current saved versions. Private notes are never published.</p>
+        <p className="text-slate-600">Publishes the ticked events&apos; current saved versions from this track — nothing else changes. Private notes are never published. To remove published events or see a full before/after, use “Review week vs. published”.</p>
         <ul className="divide-y divide-slate-100 rounded-md border border-slate-200">
           {records.map((r) => {
             const warn = PLAN_KINDS.includes(r.kind) && r.blocks.length ? summarizeIssues(analyzePractice(r.blocks, r.targetMinutes)).length : 0;
@@ -279,7 +291,7 @@ function PublishWeekDialog({ open, records, onClose, onDone }: { open: boolean; 
   );
 }
 
-function DuplicateWeekDialog({ open, weekStart, onClose, onDone }: { open: boolean; weekStart: string; onClose: () => void; onDone: (target: string) => void }) {
+function DuplicateWeekDialog({ open, weekStart, trackId, onClose, onDone }: { open: boolean; weekStart: string; trackId: string; onClose: () => void; onDone: (target: string) => void }) {
   const toast = useToast();
   const [target, setTarget] = useState(addDays(weekStart, 7));
   const [copyCoaches, setCopyCoaches] = useState(true);
@@ -289,7 +301,7 @@ function DuplicateWeekDialog({ open, weekStart, onClose, onDone }: { open: boole
   async function submit() {
     setBusy(true);
     try {
-      const r = await api<{ ids: string[] }>("/api/weeks/duplicate", { body: { sourceWeekStart: weekStart, targetWeekStart: targetMonday, copyCoaches, copyNotes } });
+      const r = await api<{ ids: string[] }>("/api/weeks/duplicate", { body: { trackId, sourceWeekStart: weekStart, targetWeekStart: targetMonday, copyCoaches, copyNotes } });
       toast({ message: `Copied ${r.ids.length} events as drafts to the week of ${formatDateMedium(targetMonday)}.`, tone: "success" });
       onDone(targetMonday);
     } catch (e) {

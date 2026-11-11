@@ -23,6 +23,8 @@ export function sha256(text: string): string {
  * (publish time and the change notice). Two equal hashes = no public difference.
  */
 export function publicContentHash(p: PublicEvent): string {
-  const { publishedAt: _publishedAt, notice: _notice, ...content } = p;
+  const content: Partial<PublicEvent> = { ...p };
+  delete content.publishedAt;
+  delete content.notice;
   return sha256(canonicalJson(content));
 }

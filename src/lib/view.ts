@@ -3,7 +3,7 @@
  * from a PUBLIC projection (public pages) or from a coach working copy.
  * Coach-only fields are optional and only present on coach views.
  */
-import type { PublicBlock, PublicEvent, PublicMeet } from "./projection";
+import type { PublicBlock, PublicEvent, PublicMeet, PublicNotice } from "./projection";
 import type { Block, EventDoc } from "./schemas";
 import type { Confirmation, EventKind, EventStatus, PublicationState } from "./constants";
 import type { Weapon } from "./weapons";
@@ -81,6 +81,9 @@ export interface ViewEvent {
   meet: PublicMeet | null;
   links: Array<{ label: string; url: string }>;
   blocks: ViewBlock[];
+  /** Public change notice (e.g. a quick logistics update). */
+  notice?: PublicNotice | null;
+  timezone?: string;
   // coach-only
   publication?: PublicationState;
   isDemo?: boolean;

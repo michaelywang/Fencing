@@ -137,15 +137,21 @@ export async function createTrack(actor: SessionUser, input: CreateTrackInput) {
       const drillMap = new Map<string, string>();
       const localDrills = await tx.select().from(drills).where(and(eq(drills.trackId, source.id), isNull(drills.deletedAt)));
       for (const d of localDrills) {
-        const { id: oldId, createdAt: _c, updatedAt: _u, ...rest } = d;
-        const [copy] = await tx.insert(drills).values({ ...rest, trackId: track.id, clearBatchId: null, createdBy: actor.id, updatedBy: actor.id }).returning({ id: drills.id });
-        drillMap.set(oldId, copy.id);
+        const rest: Partial<typeof d> = { ...d };
+        delete rest.id;
+        delete rest.createdAt;
+        delete rest.updatedAt;
+        const [copy] = await tx.insert(drills).values({ ...(rest as typeof drills.$inferInsert), trackId: track.id, clearBatchId: null, createdBy: actor.id, updatedBy: actor.id }).returning({ id: drills.id });
+        drillMap.set(d.id, copy.id);
       }
       const localTemplates = await tx.select().from(templates).where(and(eq(templates.trackId, source.id), isNull(templates.deletedAt)));
       for (const t of localTemplates) {
-        const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = t;
-        const doc = { ...rest.doc, blocks: rest.doc.blocks.map((b) => (b.source && drillMap.has(b.source.drillId) ? { ...b, source: { ...b.source, drillId: drillMap.get(b.source.drillId)! } } : b)) };
-        await tx.insert(templates).values({ ...rest, doc, trackId: track.id, clearBatchId: null, createdBy: actor.id, updatedBy: actor.id });
+        const rest: Partial<typeof t> = { ...t };
+        delete rest.id;
+        delete rest.createdAt;
+        delete rest.updatedAt;
+        const doc = { ...t.doc, blocks: t.doc.blocks.map((b) => (b.source && drillMap.has(b.source.drillId) ? { ...b, source: { ...b.source, drillId: drillMap.get(b.source.drillId)! } } : b)) };
+        await tx.insert(templates).values({ ...(rest as typeof templates.$inferInsert), doc, trackId: track.id, clearBatchId: null, createdBy: actor.id, updatedBy: actor.id });
       }
       const srcRows = await tx.select().from(events).where(and(eq(events.trackId, source.id), isNull(events.deletedAt))).orderBy(asc(events.date));
       if (srcRows.length > MAX_BULK_ROWS) throw new AppError(413, "too_large", `Track has more than ${MAX_BULK_ROWS} events and cannot be duplicated in one step.`);

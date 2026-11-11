@@ -1,6 +1,8 @@
 import { apiRoute, readJson } from "@/server/http";
-import { deleteEvent, getEvent, saveEvent } from "@/server/services/events";
+import { getEvent, saveEvent } from "@/server/services/events";
+import { deleteEvent } from "@/server/services/publishing";
 import { notFound } from "@/server/errors";
+import { bool, str, type Body } from "@/server/apiInput";
 
 export const GET = apiRoute<{ id: string }>("coach", async ({ params }) => {
   const event = await getEvent(params.id);
@@ -14,7 +16,9 @@ export const PUT = apiRoute<{ id: string }>("coach", async ({ req, user, params 
   return { event: await saveEvent(user, params.id, { baseVersion: Number(body.baseVersion), doc: body.doc }) };
 });
 
-export const DELETE = apiRoute<{ id: string }>("coach", async ({ user, params }) => {
-  await deleteEvent(user, params.id);
-  return { ok: true };
+/** Move to Trash. `unpublish: true` also removes it from the public schedule (explicit choice). */
+export const DELETE = apiRoute<{ id: string }>("coach", async ({ req, user, params }) => {
+  const body = await readJson<Body>(req);
+  const q = req.nextUrl.searchParams;
+  return deleteEvent(user, params.id, { unpublish: bool(body.unpublish) || q.get("unpublish") === "1", operationId: str(body.operationId) || null });
 });

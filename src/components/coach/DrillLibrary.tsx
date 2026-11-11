@@ -11,8 +11,9 @@ import { Button, EmptyState, Notice, Spinner, cx, inputClass } from "@/component
 import { CommaField, LinesField, NumberField, SelectField, TextArea, TextField } from "@/components/editor/fields";
 import { LinksEditor } from "@/components/editor/PlanEditor";
 import { Modal, useToast } from "./CoachContext";
+import { useTrack } from "./TrackBar";
 
-type DrillRow = LibraryDrill & { deletedAt: string | null; externalRef: string | null };
+type DrillRow = LibraryDrill & { deletedAt: string | null; externalRef: string | null; trackId?: string | null };
 interface Facets {
   skills: string[];
   equipment: string[];
@@ -37,6 +38,7 @@ const toDraft = (d: LibraryDrill): Draft => ({ title: d.title, weapons: d.weapon
 
 export function DrillLibrary() {
   const toast = useToast();
+  const { trackId, track } = useTrack();
   const [filters, setFilters] = useState({ q: "", weapon: "", skill: "", level: "", maxDuration: "", equipment: "", tag: "" });
   const [drills, setDrills] = useState<DrillRow[] | null>(null);
   const [facets, setFacets] = useState<Facets>({ skills: [], equipment: [], tags: [] });
@@ -46,13 +48,25 @@ export function DrillLibrary() {
 
   const load = useCallback(() => {
     const p = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
+    if (trackId) p.set("track", trackId);
     api<{ drills: DrillRow[] }>(`/api/drills?${p}`)
       .then((r) => {
         setDrills(r.drills);
         setError(null);
       })
       .catch((e) => setError(e instanceof ApiError ? e.message : "Could not load the library."));
-  }, [filters]);
+  }, [filters, trackId]);
+
+  async function promote(d: DrillRow) {
+    if (!window.confirm(`Add “${d.title}” to the SHARED library (visible in every track)?`)) return;
+    try {
+      await api(`/api/drills/${d.id}/promote`, { body: {} });
+      toast({ message: `“${d.title}” is now in the shared library.`, tone: "success" });
+      load();
+    } catch (e) {
+      toast({ message: e instanceof ApiError ? e.message : "Could not share the drill.", tone: "error" });
+    }
+  }
 
   useEffect(() => {
     const t = window.setTimeout(load, 200);
@@ -88,6 +102,7 @@ export function DrillLibrary() {
       </div>
       <p className="text-sm text-slate-600">
         Build drills once, then insert them into practices from the editor (<strong>+ From drill library</strong>). Each insert is an independent, editable copy — editing a drill here never changes practices that already use it.
+        This is the shared library; drills marked “Only in {track?.name}” came from imports or experiments in that track and are not shared until you choose to.
       </p>
       <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 sm:grid-cols-2 lg:grid-cols-7">
         <input aria-label="Search" className={cx(inputClass, "lg:col-span-2")} placeholder="Search drills…" value={filters.q} onChange={(e) => set("q")(e.target.value)} />
@@ -122,6 +137,11 @@ export function DrillLibrary() {
                   {d.durationMin ? <span>· {d.durationMin} min</span> : null}
                   <span>· {BLOCK_CATEGORY_LABEL[d.category]}</span>
                   {d.isDemo ? <span className="rounded bg-fuchsia-100 px-1 font-semibold text-fuchsia-900">Demo</span> : null}
+                  {d.trackId ? (
+                    <button type="button" className="rounded bg-amber-100 px-1 font-semibold text-amber-900 underline" title="Track-only drill — click to add it to the shared library" onClick={() => void promote(d)}>
+                      Only in {track?.name} · share…
+                    </button>
+                  ) : null}
                 </p>
               </div>
               <div className="flex gap-1">

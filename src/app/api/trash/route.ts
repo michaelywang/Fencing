@@ -1,9 +1,6 @@
 import { apiRoute } from "@/server/http";
-import { listTrash } from "@/server/services/events";
-import { listDrills, listTemplates } from "@/server/services/library";
+import { listTrash } from "@/server/services/trash";
+import { uuidOrThrow } from "@/server/apiInput";
 
-export const GET = apiRoute("coach", async () => ({
-  events: await listTrash(),
-  drills: await listDrills({ deleted: true }),
-  templates: await listTemplates({ deleted: true }),
-}));
+/** Everything in Trash for a season — every age (nothing expires silently). */
+export const GET = apiRoute("coach", async ({ req }) => listTrash(uuidOrThrow(req.nextUrl.searchParams.get("season"), "season")));

@@ -28,6 +28,12 @@ export function EventSummary({ event, showStatus, headingLevel = 1 }: { event: V
         <H className={cx("text-xl font-bold leading-tight text-slate-900 sm:text-2xl", canceled && "line-through decoration-2")}>{displayTitle(event)}</H>
         {event.theme && event.theme !== displayTitle(event) ? <p className="mt-0.5 text-base font-medium text-slate-700">Theme: {event.theme}</p> : null}
       </div>
+      {event.notice && !canceled ? (
+        <div role="status" className="rounded-md border-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950" data-testid="change-notice">
+          {event.notice.text}
+          <span className="ml-1 font-normal text-amber-900">(updated {new Date(event.notice.at).toLocaleString("en-US", { timeZone: event.timezone ?? "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })})</span>
+        </div>
+      ) : null}
       {canceled ? (
         <div role="alert" className="rounded-md border-2 border-red-700 bg-red-50 px-3 py-2 text-sm font-semibold text-red-900">
           This event is canceled{event.cancelReason ? `: ${event.cancelReason}` : "."}

@@ -1,5 +1,7 @@
 import { CoachProvider } from "@/components/coach/CoachContext";
 import { CoachNav } from "@/components/coach/CoachNav";
+import { TrackBar } from "@/components/coach/TrackBar";
+import { listWorkspaces } from "@/server/services/scope";
 import { requireCoachPage } from "@/server/http";
 import { getSettings, listLocations } from "@/server/services/settings";
 import { listUsers } from "@/server/services/accounts";
@@ -11,7 +13,7 @@ export const metadata = { title: { default: "Coach planner", template: "%s · Co
 /** Every /coach page requires a valid session (checked on the server, per request). */
 export default async function CoachLayout({ children }: { children: React.ReactNode }) {
   const session = await requireCoachPage();
-  const [settings, locations, users] = await Promise.all([getSettings(), listLocations({ includeArchived: true }), listUsers()]);
+  const [settings, locations, users, workspaces] = await Promise.all([getSettings(), listLocations({ includeArchived: true }), listUsers(), listWorkspaces()]);
   return (
     <CoachProvider
       value={{
@@ -27,10 +29,12 @@ export default async function CoachLayout({ children }: { children: React.ReactN
         locations: locations.map((l) => ({ id: l.id, name: l.name, shortName: l.shortName, address: l.address, kind: l.kind, archivedAt: l.archivedAt })),
         coachNames: users.filter((u) => !u.disabledAt).map((u) => u.name),
         today: todayInTimeZone(settings.timezone),
+        workspaces,
       }}
     >
       <div className="min-h-dvh">
         <CoachNav />
+        <TrackBar />
         <main id="main" className="mx-auto w-full max-w-[1600px] px-3 py-3 sm:px-4">
           {children}
         </main>

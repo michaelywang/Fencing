@@ -7,6 +7,7 @@ import { Wordmark } from "@/components/Logo";
 import { cx } from "@/components/ui";
 import { api } from "@/lib/api-client";
 import { useCoach } from "./CoachContext";
+import { useTrackHref } from "./TrackBar";
 
 const LINKS = [
   { href: "/coach/calendar", label: "Month" },
@@ -14,7 +15,9 @@ const LINKS = [
   { href: "/coach/drills", label: "Drill library" },
   { href: "/coach/templates", label: "Templates" },
   { href: "/coach/season", label: "Season" },
+  { href: "/coach/tracks", label: "Tracks" },
   { href: "/coach/publish", label: "Publish" },
+  { href: "/coach/backups", label: "Backups" },
   { href: "/coach/import", label: "Import" },
   { href: "/coach/trash", label: "Trash" },
 ];
@@ -24,7 +27,8 @@ export function CoachNav() {
   const pathname = usePathname();
   const router = useRouter();
   const [menu, setMenu] = useState(false);
-  const links = user.role === "admin" ? [...LINKS, { href: "/coach/admin", label: "Admin" }] : LINKS;
+  const withTrack = useTrackHref();
+  const links = (user.role === "admin" ? [...LINKS, { href: "/coach/admin", label: "Admin" }] : LINKS).map((l) => ({ ...l, to: l.href === "/coach/admin" ? l.href : withTrack(l.href) }));
 
   async function signOut() {
     try {
@@ -39,7 +43,7 @@ export function CoachNav() {
   return (
     <header className="no-print sticky top-0 z-40 border-b-4 border-gl-red bg-gl-blue text-white">
       <div className="on-dark mx-auto flex max-w-[1600px] items-center gap-3 px-3 py-1.5">
-        <Link href="/coach/calendar" className="shrink-0 rounded-md">
+        <Link href={withTrack("/coach/calendar")} className="shrink-0 rounded-md">
           <Wordmark name="GL Fencing" sub="Coach planner" />
         </Link>
         <nav aria-label="Coach" className="hidden flex-1 xl:block">
@@ -47,7 +51,7 @@ export function CoachNav() {
             {links.map((l) => (
               <li key={l.href}>
                 <Link
-                  href={l.href}
+                  href={l.to}
                   aria-current={pathname.startsWith(l.href) ? "page" : undefined}
                   className={cx(
                     "inline-flex h-9 items-center rounded-md px-2.5 text-sm font-semibold",
@@ -80,7 +84,7 @@ export function CoachNav() {
               <div role="menu" className="absolute right-0 mt-1 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-slate-800 shadow-xl">
                 <div className="xl:hidden">
                   {links.map((l) => (
-                    <Link key={l.href} role="menuitem" href={l.href} onClick={() => setMenu(false)} className={cx("block px-3 py-2 text-sm hover:bg-slate-100", pathname.startsWith(l.href) && "font-bold text-gl-blue")}>
+                    <Link key={l.href} role="menuitem" href={l.to} onClick={() => setMenu(false)} className={cx("block px-3 py-2 text-sm hover:bg-slate-100", pathname.startsWith(l.href) && "font-bold text-gl-blue")}>
                       {l.label}
                     </Link>
                   ))}

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { getDb, type DbOrTx, type Tx } from "@/server/db";
 import { events, seasons, tracks } from "@/server/db/schema";
 import { AppError, badRequest, notFound } from "@/server/errors";

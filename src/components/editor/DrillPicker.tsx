@@ -7,6 +7,7 @@ import { DRILL_LEVEL_LABEL, BLOCK_CATEGORY_LABEL } from "@/lib/constants";
 import type { Block, EventDoc } from "@/lib/schemas";
 import { LANE_LABEL, WEAPONS, type Lane, type Weapon } from "@/lib/weapons";
 import { Modal } from "@/components/coach/CoachContext";
+import { useTrack } from "@/components/coach/TrackBar";
 import { WeaponTag } from "@/components/badges";
 import { Button, Notice, Spinner, cx, inputClass } from "@/components/ui";
 import { laneEnd } from "./PlanEditor";
@@ -30,6 +31,7 @@ export function DrillPicker({
   onAdd: (blocks: Block[]) => void;
   onReplace: (drill: LibraryDrill) => void;
 }) {
+  const { trackId } = useTrack();
   const [q, setQ] = useState("");
   const [weapon, setWeapon] = useState<Weapon | "">("");
   const [level, setLevel] = useState("");
@@ -48,6 +50,7 @@ export function DrillPicker({
     if (weapon) params.set("weapon", weapon);
     if (level) params.set("level", level);
     if (maxDuration) params.set("maxDuration", maxDuration);
+    if (trackId) params.set("track", trackId); // shared library + this track's own drills
     const t = window.setTimeout(() => {
       api<{ drills: LibraryDrill[] }>(`/api/drills?${params}`, { signal: ctrl.signal })
         .then((r) => {
@@ -62,7 +65,7 @@ export function DrillPicker({
       window.clearTimeout(t);
       ctrl.abort();
     };
-  }, [open, q, weapon, level, maxDuration]);
+  }, [open, q, weapon, level, maxDuration, trackId]);
 
   function choose(d: LibraryDrill) {
     if (mode === "replace") {

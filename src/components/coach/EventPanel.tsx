@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api-client";
 import type { EventRecord } from "@/lib/view";
 import { EventEditor } from "@/components/editor/EventEditor";
 import { Button, Notice, Spinner, cx } from "@/components/ui";
+import { useTrack } from "./TrackBar";
 
 /**
  * Side panel (desktop) / sheet (tablet, phone) that loads one event into the
@@ -25,6 +26,7 @@ export function EventPanel({
 }) {
   const [record, setRecord] = useState<EventRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { trackId, track } = useTrack();
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +63,15 @@ export function EventPanel({
       ) : !record ? (
         <div className="p-4">
           <Spinner label="Loading event" />
+        </div>
+      ) : record.trackId !== trackId ? (
+        <div className="space-y-3 p-4">
+          {/* never edit another track's working copy from this tab's track */}
+          <Notice tone="warn">This event belongs to a different planning track than {track?.name ?? "the one open in this tab"}, so it is not opened here.</Notice>
+          <a className="font-semibold text-gl-blue underline" href={`/coach/e/${record.id}?track=${record.trackId}`}>
+            Open it in its own track
+          </a>
+          <Button onClick={onClose}>Close</Button>
         </div>
       ) : (
         <EventEditor key={record.id} initial={record} mode="panel" onClose={onClose} onChange={onChange} onDeleted={onDeleted} onCreated={onCreated} />
