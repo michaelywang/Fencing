@@ -11,6 +11,7 @@ import { deleteEvent, getLiveLogistics, listPublications, publish, publishLogist
 import { backupNow, listBackups, restoreBackup } from "@/server/services/backups";
 import { executeClear, listTrash, previewClear, previewPurge, purgeTrash, restoreFromTrash } from "@/server/services/trash";
 import { createTrack, removeTrack } from "@/server/services/tracks";
+import { listWorkspaces } from "@/server/services/scope";
 import { createDrill, createPhase, listDrills, updateDrill } from "@/server/services/library";
 import { runImport } from "@/server/services/transfer";
 import { getPhasesInRange, getPublicEvent, getPublicEvents, getPublicMeta } from "@/server/services/public";
@@ -65,6 +66,8 @@ describe("1 · tracks: faithful duplicate, isolation, A stays publicly unchanged
     const aRows = await listTrackEvents(TRACK_A);
     expect(bRows).toHaveLength(aRows.length);
     const bNov = bRows.find((r) => r.date === "2026-11-09")!;
+    const ws = (await listWorkspaces()).find((w) => w.id === SEASON_ID)!;
+    expect(ws.tracks.map((t) => [t.name, t.eventCount])).toEqual([["Track A", 4], ["Track B", 4]]);
     expect(bNov.logicalId).toBe(nov.logicalId); // same logical identity
     expect(bNov.id).not.toBe(nov.id); // separate working copy
     expect(bNov).toMatchObject({ confirmation: "tentative", status: "canceled", cancelReason: "Gym", completedNotes: "Went well", privateNotes: `${SECRET} A` });

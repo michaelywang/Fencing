@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { SECRET, adminContext } from "./helpers";
+import { SECRET, adminContext, apiCall, mainTrack } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
 let eventId = "";
+/** Public links use the event's LOGICAL id (stable across tracks), not the working-copy id. */
+let publicId = "";
 
 async function addBlock(page: Page, lane: "Shared" | "Foil" | "Épée" | "Saber", title: string, minutes: number) {
   const panel = page.getByRole("complementary", { name: "Event details" });
@@ -27,6 +29,7 @@ test("a coach creates a practice in the planner, builds parallel weapon plans, a
   await expect(page).toHaveURL(/m=2026-12/);
   await expect(page).toHaveURL(/e=[0-9a-f-]{36}/);
   eventId = new URL(page.url()).searchParams.get("e")!;
+  publicId = (await apiCall<{ event: { logicalId: string } }>(page, `/api/events/${eventId}`)).data.event.logicalId;
   const panel = page.getByRole("complementary", { name: "Event details" });
   await expect(panel.getByText("Draft — only coaches can see this.")).toBeVisible();
 
@@ -64,7 +67,7 @@ test("a coach creates a practice in the planner, builds parallel weapon plans, a
 test("students read it without an account and never see private notes", async ({ browser }) => {
   const anon = await browser.newContext();
   const page = await anon.newPage();
-  await page.goto(`/e/${eventId}`);
+  await page.goto(`/e/${publicId}`);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Original theme");
   await expect(page.getByText("Meet at the Gold Gym doors.")).toBeVisible();
   await expect(page.getByRole("link", { name: /Parry 4 – riposte/ }).first()).toBeVisible();
@@ -87,7 +90,7 @@ test("edit as draft keeps the public version; publishing updates the same public
 
   const anon = await browser.newContext();
   const student = await anon.newPage();
-  await student.goto(`/e/${eventId}`);
+  await student.goto(`/e/${publicId}`);
   await expect(student.getByRole("heading", { level: 1 })).toHaveText("Original theme");
 
   await page.getByRole("button", { name: "Save & publish changes" }).click();
@@ -104,23 +107,24 @@ test("drafts are invisible publicly, and a preview shows exactly what students w
   const ctx = await adminContext(browser);
   const page = await ctx.newPage();
   await page.goto("/coach/calendar?m=2026-12");
-  const created = await page.evaluate(async () => {
+  const { trackId } = await mainTrack(page);
+  const created = await page.evaluate(async (trackId) => {
     const res = await fetch("/api/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc: { kind: "practice", date: "2026-12-09", startTime: "15:30", title: "Secret draft practice", privateNotes: "hidden" } }),
+      body: JSON.stringify({ trackId, doc: { kind: "practice", date: "2026-12-09", startTime: "15:30", title: "Secret draft practice", privateNotes: "hidden" } }),
     });
-    return (await res.json()).event as { id: string };
-  });
+    return (await res.json()).event as { id: string; logicalId: string };
+  }, trackId);
   const anon = await browser.newContext();
   const student = await anon.newPage();
-  const res = await student.goto(`/e/${created.id}`);
+  const res = await student.goto(`/e/${created.logicalId}`);
   expect(res?.status()).toBe(404);
   await student.goto("/month?m=2026-12");
   await expect(student.getByText("Secret draft practice")).toHaveCount(0);
 
   await page.goto(`/coach/preview/${created.id}`);
-  await expect(page.getByText("Preview — exactly what students will see after publishing.")).toBeVisible();
+  await expect(page.getByText("Preview of this track — exactly what students will see after publishing it.")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Secret draft practice");
   expect(await page.content()).not.toContain("hidden</");
   await anon.close();

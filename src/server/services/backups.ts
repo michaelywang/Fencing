@@ -194,7 +194,7 @@ export async function placeSnapshot(tx: Tx, seasonId: string, slot: number, snap
 function defaultLabel(reason: string, when = new Date()): string {
   const stamp = when.toISOString().slice(0, 16).replace("T", " ");
   const what =
-    reason === "before-clear" ? "Before clearing" : reason === "before-replace" ? "Before replacing" : reason === "swap" ? "Live before restore" : "Saved";
+    reason === "before-clear" ? "Before clearing" : reason === "before-replace" ? "Before replacing" : reason === "swap" ? "Public schedule before a restore" : "Saved";
   return `${what} (${stamp} UTC)`;
 }
 
@@ -285,7 +285,7 @@ export async function restoreBackup(
     const counts = await applyStateToLive(tx, season, gen, snap.scope, snap.events, snap.phases, { action: "restore-backup", actor, operationId: input.operationId });
     await tx
       .update(backupSlots)
-      .set({ snapshotId: previousLive.id, label: `Live before restoring “${slotRow.label}”`.slice(0, 120), assignedAt: sql`now()`, assignedBy: actor.id })
+      .set({ snapshotId: previousLive.id, label: defaultLabel("swap"), assignedAt: sql`now()`, assignedBy: actor.id })
       .where(and(eq(backupSlots.seasonId, season.id), eq(backupSlots.slot, input.slot)));
     await collectSnapshot(tx, snap.id);
     await logLive(tx, season, {

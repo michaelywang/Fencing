@@ -4,7 +4,7 @@ import { WeekView } from "@/components/calendar/WeekView";
 import { PublicEventCard } from "@/components/public/PublicCards";
 import { WeaponPreferencePicker } from "@/components/plan/WeaponFilter";
 import { buttonClass } from "@/components/ui";
-import { getPhasesInRange, getPublicEvents, getPublicMeta } from "@/server/services/public";
+import { getPhasesInRange, getPublicEvents, getPublicMeta, publicSnapshot } from "@/server/services/public";
 import { addDays, formatWeekRange, isISODate, startOfWeek, todayInTimeZone } from "@/lib/dates";
 import { fromPublic } from "@/lib/view";
 import { WEAPON_PREF_COOKIE, parseWeaponFilter } from "@/lib/weapons";
@@ -14,12 +14,13 @@ export const metadata = { title: "Week" };
 
 export default async function PublicWeekPage({ searchParams }: { searchParams: Promise<{ d?: string }> }) {
   const { d } = await searchParams;
-  const meta = await getPublicMeta();
-  const today = todayInTimeZone(meta.timezone);
-  const weekStart = startOfWeek(d && isISODate(d) ? d : today);
-  const weekEnd = addDays(weekStart, 6);
-  const events = (await getPublicEvents(weekStart, weekEnd)).map(fromPublic);
-  const phases = await getPhasesInRange(weekStart, weekEnd);
+  const { today, weekStart, events, phases } = await publicSnapshot(async (db) => {
+    const meta = await getPublicMeta(db);
+    const today = todayInTimeZone(meta.timezone);
+    const weekStart = startOfWeek(d && isISODate(d) ? d : today);
+    const weekEnd = addDays(weekStart, 6);
+    return { meta, today, weekStart, weekEnd, events: (await getPublicEvents(weekStart, weekEnd, db)).map(fromPublic), phases: await getPhasesInRange(weekStart, weekEnd, db) };
+  });
   const weapon = parseWeaponFilter((await cookies()).get(WEAPON_PREF_COOKIE)?.value);
 
   return (

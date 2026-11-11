@@ -69,24 +69,69 @@ Imports may omit `start`. `lib/sequencing.ts` processes blocks in order with one
 
 Unit tests cover a full 150-minute practice (shared frame plus parallel blocks, where a naive sum would give 330 minutes), plus gaps, overlaps, custom targets and joint-weapon blocks.
 
-## Events, drafts and publishing
+## Seasons, planning tracks and logical events
 
 ```
-events            private working copy (draft edits, private notes, version counter)
-event_revisions   full snapshots for history and restore (who/when/what changed)
-public_events     sanitized public projection — the ONLY event table public routes read
-publish_log       each publish/unpublish/cancel + optional public change note
+seasons            the workspace: dates, public visibility, live_generation (monotonic)
+tracks             saved planning tracks per season (Track A, B, C …), soft-removable
+logical_events     stable identity of "one event"; its id is the public URL (/e/<id>)
+events             private working copies = one VARIANT per (track, logical event)
+event_revisions    full private snapshots for history and restore
+phases             track-specific (private) training phases
+public_events      the LIVE schedule, keyed by logical id — the ONLY event table public routes read
+public_phases      published phases
+track_baselines    per track & logical event: the live generation this track last reconciled with
+event_publications event-level provenance: what went live, from which track/row, previous payload
+backup_snapshots   immutable, self-contained, schema-versioned copies of a public scope
+backup_slots       (season, slot 1–3) → snapshot pointer + label
+clear_batches      one row per "clear schedule" (actor, time, scope, items, backup used)
+operations         idempotency records (client operation ids)
+publish_log        operation-level public activity (+ the public change note)
+drills, templates  shared library (track_id NULL) or track-only variants (track_id set)
 ```
 
-- Every save is an **optimistic-concurrency** write: the client sends the `version` it started from, and the server rejects stale writes with `409` and the current copy. The editor then shows who saved, when, and which fields differ. The coach chooses "keep mine" or "use theirs", and both versions stay in history.
-- **Autosave** writes only the private working copy. If a save fails (offline, session expired, server error), the unsaved document is also kept in the browser's `localStorage` as a recovery copy, retried automatically, and offered back after a reload. A `beforeunload` guard warns before leaving with unsaved edits.
-- **Publishing** builds `public_events.payload` with `lib/projection.ts`. The projection whitelists every field explicitly; nothing is spread from the working copy. A field added to the working copy later is therefore private until someone deliberately adds it to the projection. Private notes, completed notes, block private notes and library provenance are never included. A unit test checks that unknown fields are dropped.
-- **Edit as draft**: editing a published event changes only the working copy (`publication = "changed"`). Students keep seeing the published snapshot until "Save & publish changes". "Discard changes" restores the last published snapshot.
-- **Cancel / reinstate** can publish *only* the status and reason of the live version, so other unfinished draft edits are not exposed.
-- **Delete** is a soft delete. Undo or Trash restores the event, including its previous public version.
-- **Revisions**: rapid autosaves by the same coach within 10 minutes are coalesced into one revision. Publishes, moves, restores, cancels, imports and deletes always create their own revision.
+**Selection is per tab.** The selected track is a URL parameter (`?track=`). Pages without it are redirected to the default (or the event's own track for `/coach/e/<id>`), so reload, bookmarks, Back/Forward and two tabs on different tracks all behave independently. No per-user "current track" is stored on the server.
 
-Public pages are rendered per request (`dynamic = "force-dynamic"`, `Cache-Control: no-store`). A publish is therefore visible on the very next page load at the same URL, with no cache invalidation or redeploy needed.
+**Identity.** A track holds at most one active variant per logical event (partial unique index `(track_id, logical_id) WHERE deleted_at IS NULL`). Duplicating a track copies rows with the same logical ids; publishing any track's variant updates the same public event and URL. Logical events never cross seasons. Import keys are unique per track among active rows (`(track_id, external_ref) WHERE deleted_at IS NULL`), so Trash rows never block a re-import. Import identity mapping is documented in [IMPORT_FORMAT.md](IMPORT_FORMAT.md#tracks-and-event-identity).
+
+**Isolation.** Events, blocks and their drill snapshots, private/completed notes, phases and track-only drills/templates belong to a track. Shared drills/templates, locations, settings and accounts are global; imports change them only with an explicit `updateShared` choice.
+
+## Publishing and the live schedule
+
+- **Publication state is content-based**: each working copy is projected (`lib/projection.ts`, an explicit whitelist) and its hash (ignoring publish time and notice) is compared with the live payload: *draft* (nothing live), *published* (identical), *changed* (different). This is meaningful across tracks — Track B's copy shows *published* when students see exactly B's version.
+- Every operation that changes the live schedule runs in **one transaction under a per-season row lock** (`SELECT … FOR UPDATE` on `seasons`) and allocates **one new live generation** (monotonic, never reused — also across clear, restore and rollback). Each changed logical event records the generation it last changed at.
+- **Baselines / stale-plan detection.** A track records, per logical event, the live generation it last reconciled with (default: the track's `baseline_generation`). If the live event changed after that *and* the track would publish something different, the review reports a **conflict** (`live-changed`, `live-added` = would remove something newer, `live-removed` = would bring back something removed). The coach resolves each: overwrite, skip, or take the live version into the track. Unrelated events outside the selection or scope never block.
+- **Two operations, one review engine** (`services/publishing.ts`):
+  - *publish selected* — given rows (and explicit removals); nothing else changes;
+  - *replace scope* — the pairs reviewed are logical ids whose **track variant or live version** falls in the scope (date range + kinds), so moves across the boundary are detected by identity using both the old live date and the new date; the result in scope equals the track exactly; out-of-scope events are preserved (a move *out* of the scope is published at its new date, never duplicated or dropped).
+  - The server returns a **review token** (hash of every pair's row version, live generation and live content, plus phases). Executing a replacement requires the token; any change in between → `409 review_stale` with a fresh review.
+- **Status-only cancel/reinstate** and **quick logistics updates** patch the *current live payload* (not the private document), so unfinished draft edits are never exposed. Logistics updates detect per-field conflicts against the values the coach started from, reconcile only those fields in the coach's working copy, set a public `notice`, and are undoable (an undo is a new, recorded patch). A notice is kept on later publishes only while the logistics fields are unchanged.
+- **Delete** optionally unpublishes (explicit choice); the removed payload is kept on the row so *Undo / Restore + republish* can put it back where nothing newer is live.
+- Every live change writes `event_publications` (who, which track/row, previous and new payload, operation id) and one `publish_log` row per operation (its note is the only one the public site shows, for 30 days; an older note never describes a newer state).
+- **Public reads** use one read-only `REPEATABLE READ` transaction per page (`publicSnapshot`), so a page never mixes states before/after a replacement.
+
+## Clear, Trash and backups
+
+- **Clear** (`services/trash.ts`) previews exact private and public counts and returns a token. Execution (one transaction): lock season (+track) → recompute & compare token → if public content is affected, take a backup (slot required when all three are used) → remove live rows in scope (resolved from `public_events`, independent of the track's rows) → move the track's rows (whole documents) to Trash with `clear_batch_id`, bumping versions → optionally phases and track-only drills/templates → record the batch.
+- **Versions never rewind.** Delete, clear and every restore increment the row version, so an autosave based on a pre-clear document is rejected (`409`) even after the row is restored.
+- **Restore** (item, selection or batch) runs in one transaction. A collision with a newer active row of the same logical identity or import key aborts the whole restore with a conflict report; the coach re-submits with per-item `copy` (new identity, key dropped), `replace` (the active row goes to Trash) or `skip`. Bulk restores default to drafts; `publicRestore` (labelled in the UI) republishes stored public payloads only where nothing is live for that identity.
+- **Purge** is administrator-only, re-counts and requires the reviewed count, and deletes rows permanently (all ages). Backups are untouched.
+- **Backups** are immutable snapshot rows (public payloads with resolved venue/coach display, published phases, season display data, original publication metadata) referenced by three slot pointers. Restore = swap: capture current live (same scope) into a new snapshot, apply the slot's snapshot to live **in exactly its scope**, point the slot at the captured snapshot — atomically, under the season lock, idempotent per operation id, guarded by `expectedSnapshotId`. A restore whose target equals the current live content is a no-op and rotates nothing. Snapshots have no foreign keys to event rows, so Empty Trash, removed tracks and library/venue changes cannot break them.
+
+## Operation integrity and limits
+
+- Bulk endpoints accept a client **operation id**; it is inserted into `operations` inside the same transaction, so a retry after a lost response replays the stored result instead of acting twice (also under concurrency: the second insert waits for the first commit).
+- Lock order is always season → track → rows; autosaves only lock their row. Concurrent publish/restore/clear on one season serialize; autosaves never deadlock with them.
+- One request handles a full season: bulk operations are limited to **2,000 events** per request (imports to 1,500 by the file schema). Larger scopes return a clear `413` *before* anything changes; there is no multi-request chunking that could pretend to be atomic.
+- Everything is authenticated (`apiRoute("coach" | "admin")`), CSRF-checked, validated, and sent with `Cache-Control: no-store`.
+
+## Events, drafts and history
+
+- Every save is an **optimistic-concurrency** write (`version`); stale writes get `409` with the current copy. The editor shows who saved and which fields differ.
+- **Autosave** writes only the private working copy. Failed saves keep a recovery copy in `localStorage` keyed by **track and working-copy id** (`glf.backup.<trackId>.<rowId>`), so it can never be replayed into another track's variant. Every open editor registers with a per-tab flush registry; switching tracks flushes first and refuses to switch if a save cannot complete.
+- **Revisions**: rapid autosaves by one coach within 10 minutes coalesce; publishes, moves, restores, cancels, logistics reconciliations, imports, clears and deletes always create their own revision.
+
+Public pages are rendered per request (`dynamic = "force-dynamic"`, `Cache-Control: no-store`), so a publish is visible on the very next page load at the same URL.
 
 ## Time model
 
@@ -107,7 +152,7 @@ Library drills live in `drills`. Inserting one into a practice **copies** its co
 - **CSRF**: mutating requests must come from the site's own origin (`Origin` / `Sec-Fetch-Site` check), in addition to SameSite cookies.
 - **Rate limiting** (stored in Postgres, so it works across serverless instances) covers login, setup, recovery, forgot-password and token use.
 - **XSS**: coach-written text is a small Markdown subset rendered to React elements. Raw HTML is never interpreted, and links are limited to http(s)/mailto. The server also strips HTML tags and control characters on save. Responses carry a nonce-based CSP (`src/proxy.ts`), `X-Frame-Options: DENY`, `nosniff`, and a strict referrer policy.
-- **Privacy**: public routes read only `public_events`, seasons/phases and team settings. Event IDs are random UUIDs, and a draft's ID still returns 404 publicly. Exports require an administrator and are sent with `no-store`. No secrets are in browser code, since all database access is server-side.
+- **Privacy**: public routes read only `public_events`, `public_phases`, public season fields and team settings — never `events`, `tracks`, `phases`, backups or batches. Track names, descriptions, private/completed notes and backup labels are coach-only. Event IDs are random UUIDs; a draft's ID returns 404 publicly. Permanent purge and backup deletion are administrator-only; exports require an administrator and are sent with `no-store`. No secrets are in browser code.
 
 ## Ready for a future AI integration
 

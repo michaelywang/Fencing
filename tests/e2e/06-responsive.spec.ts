@@ -72,8 +72,11 @@ for (const [name, device] of Object.entries(SIZES)) {
     test("coach calendar opens events without losing the month", async ({ browser }) => {
       const ctx = await browser.newContext({ ...device, storageState: "tests/e2e/.artifacts/admin-state.json" });
       const page = await ctx.newPage();
-      await page.goto("/coach/calendar");
+      await page.goto("/coach/admin");
+      const demo = (await apiCall<{ workspaces: Array<{ isDemo: boolean; tracks: Array<{ id: string }> }> }>(page, "/api/tracks")).data.workspaces.find((w) => w.isDemo)!;
+      await page.goto(`/coach/calendar?track=${demo.tracks[0].id}`);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+      await expect(page.getByTestId("editing-track")).toContainText("Editing Track A");
       const month = await page.getByRole("heading", { level: 1 }).textContent();
       // Phones show a selected-day list (defaulting to the next day with events); larger screens show the grid.
       const card = page.getByRole("button", { name: /Open details/ }).filter({ visible: true }).first();
@@ -87,7 +90,7 @@ for (const [name, device] of Object.entries(SIZES)) {
       await expect(page.getByRole("heading", { level: 1 })).toHaveText(month!);
       await expectNoHorizontalScroll(page);
 
-      await page.goto("/coach/week");
+      await page.goto(`/coach/week?track=${demo.tracks[0].id}`);
       await expectNoHorizontalScroll(page);
       await shot(page, `${name}-coach-week`);
       await ctx.close();

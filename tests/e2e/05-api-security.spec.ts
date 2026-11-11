@@ -1,10 +1,14 @@
 import { expect, request as pwRequest, test } from "@playwright/test";
-import { ADMIN_STATE, COACH_STATE, SECRET, adminContext, apiCall, createEvent, practiceDoc } from "./helpers";
+import { ADMIN_STATE, COACH_STATE, SECRET, adminContext, apiCall, createEvent, mainTrack, practiceDoc } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
 let publishedId = "";
+let publicId = "";
 let draftId = "";
+let draftPublicId = "";
+let trackId = "";
+let seasonId = "";
 
 test.beforeAll(async ({ browser }) => {
   const ctx = await adminContext(browser);
@@ -14,7 +18,10 @@ test.beforeAll(async ({ browser }) => {
   const draft = await createEvent(page, practiceDoc("2026-12-22", { title: "Security draft only" }));
   expect((await apiCall(page, `/api/events/${pub.id}/publish`, { body: {} })).status).toBe(200);
   publishedId = pub.id;
+  publicId = pub.logicalId;
   draftId = draft.id;
+  draftPublicId = draft.logicalId;
+  ({ trackId, seasonId } = await mainTrack(page));
   await ctx.close();
 });
 
@@ -23,6 +30,18 @@ test("anonymous visitors cannot read coach data or change anything", async ({ ba
   const id = publishedId;
   const calls: Array<[string, string, unknown?]> = [
     ["GET", "/api/events?from=2026-12-01&to=2026-12-31"],
+    ["GET", "/api/tracks"],
+    ["POST", "/api/tracks", { seasonId: "00000000-0000-4000-8000-000000000000", name: "x", mode: "empty" }],
+    ["POST", "/api/publish/review", { trackId: "00000000-0000-4000-8000-000000000000", mode: "replace" }],
+    ["POST", "/api/clear/preview", { trackId: "00000000-0000-4000-8000-000000000000", target: "both" }],
+    ["POST", "/api/clear", { trackId: "00000000-0000-4000-8000-000000000000", target: "both", token: "x" }],
+    ["GET", "/api/trash?season=00000000-0000-4000-8000-000000000000"],
+    ["POST", "/api/trash/restore", { seasonId: "00000000-0000-4000-8000-000000000000" }],
+    ["POST", "/api/trash/purge", { scope: "all", expectedCount: 0 }],
+    ["GET", "/api/backups?season=00000000-0000-4000-8000-000000000000"],
+    ["POST", "/api/backups/1/restore", { seasonId: "00000000-0000-4000-8000-000000000000" }],
+    ["GET", `/api/live/00000000-0000-4000-8000-000000000000`],
+    ["POST", `/api/live/00000000-0000-4000-8000-000000000000/logistics`, {}],
     ["GET", `/api/events/${id}`],
     ["GET", `/api/events/${id}/revisions`],
     ["POST", "/api/events", { doc: practiceDoc("2026-12-23") }],
@@ -52,7 +71,12 @@ test("coaches without the admin role cannot use admin endpoints", async ({ baseU
   expect((await coach.post("/api/admin/invites", { data: { email: "evil@x.org", role: "admin" } })).status()).toBe(403);
   expect((await coach.post("/api/admin/demo", { data: { action: "remove" } })).status()).toBe(403);
   // …but can edit content.
-  expect((await coach.get("/api/events?from=2026-12-01&to=2026-12-31")).status()).toBe(200);
+  expect((await coach.get(`/api/events?from=2026-12-01&to=2026-12-31&track=${trackId}`)).status()).toBe(200);
+  // coaches may clear/restore (reversible) but never purge permanently or delete a backup
+  expect((await coach.post("/api/trash/purge/preview", { data: { scope: "all" } })).status()).toBe(403);
+  expect((await coach.post("/api/trash/purge", { data: { scope: "all", expectedCount: 0 } })).status()).toBe(403);
+  expect((await coach.post("/api/backups/1/delete", { data: { seasonId, expectedSnapshotId: "00000000-0000-4000-8000-000000000000" } })).status()).toBe(403);
+  expect((await coach.get(`/api/trash?season=${seasonId}`)).status()).toBe(200);
   await coach.dispose();
 });
 
@@ -75,11 +99,13 @@ test("public pages and feeds expose only published, sanitized content", async ({
   expect(feedText).not.toContain(SECRET);
   expect(feedText).not.toMatch(/privateNotes|completedNotes|drillId/);
 
-  expect((await anon.get(`/api/public/events/${draftId}`)).status()).toBe(404);
+  expect((await anon.get(`/api/public/events/${draftPublicId}`)).status()).toBe(404);
+  expect((await anon.get(`/e/${draftPublicId}`)).status()).toBe(404);
   expect((await anon.get(`/e/${draftId}`)).status()).toBe(404);
+  expect((await anon.get(`/api/public/events/${publicId}`)).status()).toBe(200);
   expect((await anon.get("/e/00000000-0000-4000-8000-000000000000")).status()).toBe(404);
 
-  for (const path of ["/", "/week?d=2026-12-21", "/month?m=2026-12", `/e/${publishedId}`, "/season"]) {
+  for (const path of ["/", "/week?d=2026-12-21", "/month?m=2026-12", `/e/${publicId}`, "/season"]) {
     const res = await anon.get(path);
     const html = await res.text();
     expect(res.status(), path).toBe(200);

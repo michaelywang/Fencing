@@ -34,8 +34,8 @@ test("a deleted event can be undone immediately or restored from Trash", async (
   const panel = page.getByRole("complementary", { name: "Event details" });
   await panel.getByRole("button", { name: "More ▾" }).click();
   await panel.getByRole("menuitem", { name: "Delete…" }).click();
-  await page.getByRole("dialog", { name: "Delete this event?" }).getByRole("button", { name: "Delete" }).click();
-  await expect(page.getByText(/Deleted “Delete me practice”/)).toBeVisible();
+  await page.getByRole("dialog", { name: "Delete this event?" }).getByRole("button", { name: "Move to Trash" }).click();
+  await expect(page.getByText(/Moved “Delete me practice” to Trash/)).toBeVisible();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByText("Restored.")).toBeVisible();
   expect((await apiCall(page, `/api/events/${ev.id}`)).status).toBe(200);
@@ -43,8 +43,8 @@ test("a deleted event can be undone immediately or restored from Trash", async (
   // Delete again via API and restore from the Trash page.
   expect((await apiCall(page, `/api/events/${ev.id}`, { method: "DELETE" })).status).toBe(200);
   await page.goto("/coach/trash");
-  await page.getByRole("listitem").filter({ hasText: "Delete me practice" }).getByRole("button", { name: "Restore" }).click();
-  await expect(page.getByText(/Restored Delete me practice/)).toBeVisible();
+  await page.getByTestId("trash-event").filter({ hasText: "Delete me practice" }).getByRole("button", { name: "Restore as draft" }).click();
+  await expect(page.getByText(/Restored 1 item as drafts/)).toBeVisible();
   expect((await apiCall(page, `/api/events/${ev.id}`)).status).toBe(200);
   await ctx.close();
 });

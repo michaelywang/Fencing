@@ -6,7 +6,7 @@ import { WeaponPreferencePicker } from "@/components/plan/WeaponFilter";
 import { PublicEventCard } from "@/components/public/PublicCards";
 import { RichText } from "@/components/RichText";
 import { Card, LinkButton } from "@/components/ui";
-import { getNextUp, getPublicEvents, getPublicMeta } from "@/server/services/public";
+import { getNextUp, getPublicEvents, getPublicMeta, publicSnapshot } from "@/server/services/public";
 import { addDays, dayNumber, formatDateLong, formatWeekdayShort } from "@/lib/dates";
 import { fromPublic } from "@/lib/view";
 import { WEAPON_PREF_COOKIE, parseWeaponFilter } from "@/lib/weapons";
@@ -15,11 +15,14 @@ import { PLAN_KINDS } from "@/lib/constants";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const meta = await getPublicMeta();
   const weapon = parseWeaponFilter((await cookies()).get(WEAPON_PREF_COOKIE)?.value);
-  const { today, next, todayDate } = await getNextUp(meta.timezone);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(todayDate, i));
-  const upcoming = (await getPublicEvents(todayDate, days[6])).map(fromPublic);
+  const { meta, today, next, todayDate, days, upcomingRaw } = await publicSnapshot(async (db) => {
+    const meta = await getPublicMeta(db);
+    const { today, next, todayDate } = await getNextUp(meta.timezone, new Date(), db);
+    const days = Array.from({ length: 7 }, (_, i) => addDays(todayDate, i));
+    return { meta, today, next, todayDate, days, upcomingRaw: await getPublicEvents(todayDate, days[6], db) };
+  });
+  const upcoming = upcomingRaw.map(fromPublic);
   const todayEvents = today.map(fromPublic);
   const focus = next ? fromPublic(next) : null;
   const focusIsToday = focus?.date === todayDate;

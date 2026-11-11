@@ -19,10 +19,12 @@ All content lives in a shared online PostgreSQL database. Routine changes (pract
 | Timing model | Shared + parallel weapon blocks, validated **per weapon** for overlaps, gaps and totals vs. a configurable target (default 150 min). Warnings never block saving |
 | Drill library | Search and filter by weapon, skill, level, length, equipment and tags. Inserting creates an editable **snapshot**; later library edits never change scheduled practices. Save any block as a drill |
 | Templates & copying | Practice templates, duplicate to other dates, duplicate whole weeks (DST-safe), optional copying of coaches and private notes (off by default) |
-| Publishing | Private drafts with autosave, preview exactly what students will see, publish a day or week, edit as draft or save & publish, discard, unpublish, cancel (stays visible as *Canceled*), change notes with a last-updated time |
-| Reliability | Autosave status, offline retry with an on-device recovery copy, unsaved-change guard, conflict detection between coaches, revision history with restore, soft delete with Undo and Trash |
+| Planning tracks | Track A/B/C per season, shared by coaches; the selected track is per browser tab (URL). Faithful duplicate, create from the published schedule or from a backup, rename, reversible remove. Track-only drills/templates/phases. Switching flushes autosaves first |
+| Publishing | Nothing public changes until you publish. Before/after review of a track vs. the public schedule; publish selected events (or a week), or replace a reviewed date range exactly (moves across the range edge handled by stable event identity); conflict detection when the live schedule changed after a track's baseline; status-only cancel; **quick logistics update** (date/time/venue/report/bus, with a student-facing notice and undo); change notes with a last-updated time |
+| Clear, Trash & backups | One clear dialog (track only / published only / both, whole season or date range, optional event types), whole documents to Trash as one batch, restore items/selection/batch with conflict handling, admin-only permanent purge, **three published backup slots** per season with one-click reversible restore |
+| Reliability | Autosave status, offline retry with an on-device (per-track) recovery copy, unsaved-change guard, conflict detection between coaches, revision history with restore, atomic idempotent bulk operations, monotonic versions across clear/restore |
 | Accounts & security | Own email + password auth (no Google sign-in), invite links for any email domain, admin reset links, optional SMTP, secure first-run setup token, break-glass recovery, server-side authorization, CSRF and rate limiting, CSP, sanitized text, private notes never in public data |
-| Data | Admin full JSON export, AI-friendly JSON import with dry run, iCal (.ics) meet import, migrations, removable demo season |
+| Data | AI-friendly JSON import into a chosen track with dry run (shared library changes only on request), iCal (.ics) meet import, planning export (per track or all), migrations, removable demo season |
 
 ## Routes
 
@@ -32,7 +34,7 @@ All content lives in a shared online PostgreSQL database. Routine changes (pract
 | Public | `/week`, `/month`, `/season`, `/e/<id>` | Week plan, month calendar, season overview, one event's full plan |
 | Coaches | `/login` | Sign in |
 | Coaches | `/coach/calendar`, `/coach/week`, `/coach/e/<id>` | Month, week, full-page editor |
-| Coaches | `/coach/drills`, `/coach/templates`, `/coach/season`, `/coach/publish`, `/coach/import`, `/coach/trash`, `/coach/account` | Library, templates, phases, publishing, import, trash, password |
+| Coaches | `/coach/drills`, `/coach/templates`, `/coach/season`, `/coach/tracks`, `/coach/publish`, `/coach/backups`, `/coach/import`, `/coach/trash`, `/coach/account` | Library, templates, phases, planning tracks, publishing, published backups, import, trash, password |
 | Admins | `/coach/admin` | Coaches and invites, team settings, locations, export, demo data |
 | First run | `/setup` | Create the first administrator (needs `SETUP_TOKEN`; then disabled forever) |
 | Recovery | `/forgot`, `/reset/<token>`, `/invite/<token>`, `/recover` | Password help, invite acceptance, break-glass recovery |
@@ -69,7 +71,7 @@ npm run dev                          # http://localhost:3000/setup
 | `npm run db:migrate` · `npm run db:generate` | Apply / create migrations |
 | `npm run db:demo:load -- you@example.com` · `npm run db:demo:remove` | Demo season |
 | `npm run admin -- list \| invite-admin <email> \| reset-link <email>` | Operator CLI (account recovery) |
-| `npm run import -- <file.json\|file.ics> --as <email> [--apply]` | Import planning data as drafts from the command line |
+| `npm run import -- <file.json\|file.ics> --as <email> --track "<track>" [--apply] [--shared]` | Import planning data as drafts into a track from the command line |
 | `npm test` · `npm run test:e2e` · `npm run lint` · `npm run typecheck` | Quality checks |
 
 ## Tests
@@ -77,17 +79,18 @@ npm run dev                          # http://localhost:3000/setup
 | Suite | Count | Covers |
 | --- | --- | --- |
 | Unit (`tests/unit`) | 26 | Per-weapon timing (150-minute shared + parallel plans, gaps, overlaps, targets), auto-sequencing, schedule grid, DST and time zones, the public projection never leaking private fields, sanitization, link safety |
-| Integration on real PostgreSQL (`tests/integration`) | 41 | Draft vs. publish, edit-as-draft, save & publish, discard, unpublish, publishing a cancellation without leaking drafts, optimistic-concurrency conflicts, revision history and restore, soft delete/undo, DST-safe moves and duplication (event and week), drill snapshots, templates, import/export round trips, iCal conversion, setup token, login and rate limits, invites, resets, last-admin protection, break-glass recovery |
-| End-to-end on a production build (`tests/e2e`, Chromium) | 28 | Setup, sign-in, building and publishing a parallel plan in the UI, anonymous student reading, edit-as-draft then publish at the same URL, draft invisibility and preview, inviting a coach on another device, two-coach conflict, history restore, delete/undo/trash, drag-and-drop move, API authorization (401/403/CSRF), public HTML/feeds free of private data, cache and security headers, and responsive checks at phone, iPad portrait/landscape and desktop with no horizontal scrolling |
+| Integration on real PostgreSQL (`tests/integration`) | 63 | Planning tracks (faithful duplicate, isolation, from published), publish selected vs. scoped replacement (moves across the scope edge, review tokens), multi-month clear into one Trash batch, backups of the live version vs. private edits, Empty Trash then backup restore, three slots with swaps/no-ops/idempotent retries, scoped restore with renamed venues and library edits, imports into A and B (idempotency, re-import after clear, Trash restore collisions, UUID keys, shared-resource isolation, no partial commits), stale-baseline conflicts and concurrent operations, >90-day Trash and purge permissions, cancellation-only publishing across tracks, the snow-day logistics update with undo, a populated legacy-database upgrade and a database without seasons; plus draft vs. publish, edit-as-draft, save & publish, discard, unpublish, publishing a cancellation without leaking drafts, optimistic-concurrency conflicts, revision history and restore, soft delete/undo, DST-safe moves and duplication (event and week), drill snapshots, templates, import/export round trips, iCal conversion, setup token, login and rate limits, invites, resets, last-admin protection, break-glass recovery |
+| End-to-end on a production build (`tests/e2e`, Chromium) | 36 | Two tabs on different tracks, duplicating a track in the UI, publishing one event from Track B at the same link, autosave flush when switching tracks and direct/back-forward URLs, the snow-day logistics update, clearing a season (track + public) and one-click backup swaps, the new pages at phone/iPad/desktop; plus setup, sign-in, building and publishing a parallel plan in the UI, anonymous student reading, edit-as-draft then publish at the same URL, draft invisibility and preview, inviting a coach on another device, two-coach conflict, history restore, delete/undo/trash, drag-and-drop move, API authorization (401/403/CSRF), public HTML/feeds free of private data, cache and security headers, and responsive checks at phone, iPad portrait/landscape and desktop with no horizontal scrolling |
 
 All suites pass, and CI runs them on every push (`.github/workflows/ci.yml`).
 
 ## Documentation
 
-- [docs/COACH_GUIDE.md](docs/COACH_GUIDE.md): creating, revising, publishing, duplicating and restoring practices; the library; imports
+- [docs/COACH_GUIDE.md](docs/COACH_GUIDE.md): planning tracks (A/B/C), publishing a week or a range, quick logistics updates, clearing, Trash, published backups and the three-slot limit, imports into a track, preseason and in-season walkthroughs
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): data model (seasons, tracks, logical events, live schedule, baselines, backups), publication and concurrency semantics, security
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): hosting, environment variables, admin bootstrap, inviting coaches, email, costs
-- [docs/OPERATIONS.md](docs/OPERATIONS.md): backups and restore, account recovery, demo data, monitoring, local setup
-- [docs/IMPORT_FORMAT.md](docs/IMPORT_FORMAT.md): the JSON import format and the AI prompt
+- [docs/OPERATIONS.md](docs/OPERATIONS.md): in-app vs. database recovery, checkpoints, the tracks migration and rollback, limits, account recovery, demo data, monitoring, local setup
+- [docs/IMPORT_FORMAT.md](docs/IMPORT_FORMAT.md): the JSON import format, track targeting and identity mapping, the planning-export extension, and the AI prompt
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): stack, the scheduling model, the publishing model, security
 
 ## Customizing

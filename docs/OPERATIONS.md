@@ -4,9 +4,10 @@
 
 | Layer | What it protects | Status | Cost |
 | --- | --- | --- | --- |
-| **In-app history** (revisions, trash, undo) | Accidental edits/deletes of individual events | **Built in, always on** (verified by automated tests) | $0 |
+| **In-app history** (revisions, Trash, undo) | Accidental edits/deletes/clears of events, phases and track-only drills | **Built in, always on** (verified by automated tests) | $0 |
+| **Published backups** (3 slots per season) | Earlier versions of what students saw; one-click, reversible restore | **Built in.** Automatic before clearing or replacing the public schedule; manual any time | $0 |
 | **Neon point-in-time restore** | The whole database, back to any moment in the restore window | **Automatic once Neon is connected.** Free plan: 6 hours. Launch plan: up to 7 days | $0 / paid |
-| **Admin JSON export** | Portable copy of all content (Admin → Data → Download full export) | **Manual**: a person clicks it (suggested: weekly during the season) | $0 |
+| **Planning export (JSON)** | Portable copy of tracks, drills, templates, phases and notes (Import → Export) | **Manual**: a person clicks it (suggested: weekly during the season) | $0 |
 | **Nightly encrypted `pg_dump`** (`.github/workflows/backup.yml`) | Full database copy kept 30 days on GitHub | **Not active until you add two repository secrets** (see below) | $0 within GitHub's free Actions minutes |
 
 Nothing has been configured on your accounts yet. The table describes what each layer does once set up.
@@ -15,9 +16,21 @@ Nothing has been configured on your accounts yet. The table describes what each 
 
 ## In-app recovery (coaches)
 
-- **Undo an edit**: open the event → *History* → *View* a version → *Restore*. Restoring creates a new version, so it can itself be undone.
-- **Undo a delete**: click *Undo* in the toast, or go to *Trash* (kept at least 90 days) → *Restore*. A deleted published event gets its public version back too.
-- **Unsaved edits after a crash or lost connection**: reopen the event on the same device. The editor offers to restore the unsaved copy kept in that browser.
+These are **application-level** recoveries. They are not a database disaster-recovery backup: if the database itself is lost or corrupted, use Neon point-in-time restore or a `pg_dump` (below).
+
+- **Undo an edit**: event → *History* → *View* a version → *Restore* (a new version, so it can be undone).
+- **Undo a delete or a clear**: the toast's *Undo*, or *Trash* → *Restore as draft* / *Restore whole batch as drafts*. Republishing is a separate, labelled choice (*Restore + republish*). Trash keeps items until an administrator deletes them permanently — nothing expires automatically.
+- **A wrong publish, replacement or clear of the public schedule**: *Backups* → *Restore public schedule* (one click; the replaced version goes into the same slot, so it can be swapped back). A single logistics update: event → *History → Public changes → Undo this update*.
+- **Unsaved edits after a crash or lost connection**: reopen the event on the same device. The editor offers the recovery copy kept in that browser for that track.
+
+### Checkpoint before a big change (recommended)
+
+Before replacing a whole season or importing a large plan:
+1. *Backups → Save backup (whole season)* — an instant, in-app copy of the public schedule.
+2. *Import → Export → Download <track>* (administrators) — a portable copy of the planning track, including notes.
+3. For maximum safety, a database dump (`pg_dump`, below) or note the time for Neon point-in-time restore.
+
+Permanent deletion from Trash does **not** delete saved public backups, planning exports you downloaded, database dumps or Neon history; previously published content may survive there.
 
 ## Neon point-in-time restore
 
@@ -57,9 +70,9 @@ To try a restore safely first, create a new Neon branch, restore into that branc
 pg_dump --format=custom --no-owner "postgres://…direct-url…" > gl-fencing-$(date +%F).dump
 ```
 
-## Admin JSON export
+## Planning export (JSON, administrators)
 
-*Admin → Data → Download full export (JSON)* downloads every drill, template, season, phase, location, event (including private notes and publication state) and the coach roster (names, emails, roles; **never** passwords or tokens). The file uses the same format as imports, so it can be re-imported into a fresh installation or read by another tool. Store it privately.
+*Import → Export* downloads either one track (importable into any track: a round trip) or every season and track (`planningExport.workspaces`), with drills, templates, phases, locations, events (including private notes and publication state) and the coach roster (names, emails, roles; **never** passwords or tokens). It uses the import format plus a versioned `planningExport` extension — see [IMPORT_FORMAT.md](IMPORT_FORMAT.md#export-planning-export). It is a copy of the **working plans**, not of the public schedule, and not a database backup. Store it privately.
 
 ## Account recovery
 
@@ -82,8 +95,26 @@ Every recovery action is recorded in the `audit_log` table.
 
 ## Demo content
 
-- Load: *Admin → Data → Load demo season*, or `npm run db:demo:load -- you@example.com`.
-- Remove: *Admin → Data → Remove all demo content*, or `npm run db:demo:remove`. This deletes only rows flagged as demo (events, drills, templates, the demo season); your real content is untouched.
+- Load: *Admin → Data → Load demo season*, or `npm run db:demo:load -- you@example.com`. It creates a separate *DEMO Season* with its own Track A, publishes it, and shows a cancellation and an unpublished edit.
+- Remove: *Admin → Data → Remove all demo content*, or `npm run db:demo:remove`. This deletes the demo season with everything it owns (tracks, events, its live schedule, backups, Trash) and demo drills/templates; real seasons and content are untouched.
+
+## Upgrading to planning tracks (migration `0002_tracks`)
+
+Deploying this version runs `drizzle/0002_tracks.sql` automatically (Vercel `vercel-build` → `npm run db:migrate`; Docker at start). It is one transaction:
+
+1. **Before deploying**, take a checkpoint: Neon → note the time (point-in-time restore) and/or `pg_dump` (below), plus a planning export.
+2. The migration assigns every existing event to a season — the season whose dates contain it; events outside every season go to the **nearest** season (dates are not changed); if events exist but no season does, a hidden “Main season” is created. Nothing is discarded. A fresh installation gets an academic-year season (e.g. “2026–27 Season”).
+3. Each season gets **Track A**. Every event keeps its id as its logical id, so every `/e/<id>` link, published payload, revision, Trash item, import key and unpublished edit is unchanged; the live schedule, phases (copied to `public_phases`) and publication comparisons are identical. Track A's baseline is set to the migrated live state.
+4. After deploying, open *Tracks* and *Publish → Review changes*: Track A should show the same drafts/changes as before and no conflicts.
+
+Rollback: the migration cannot be reversed in place. Restore the pre-deploy checkpoint (Neon point-in-time or `pg_restore`) and redeploy the previous commit.
+
+Verified by `tests/integration/legacy-upgrade.test.ts` (a populated previous-release database upgraded through the real migration runner: byte-identical public payloads and revisions, same links, preserved unpublished edits and Trash) and by the fresh-install path every test run uses.
+
+## Limits (Vercel + Neon)
+
+- One request handles a whole season: up to **2,000 events** per bulk operation (publish, replace, clear, restore, duplicate track) and 1,500 per import file. Larger scopes are refused with a clear message **before** anything changes; split them by date range. Each operation is one transaction — never a sequence of partial commits.
+- A full-season replacement or import touches the database a few thousand times; with Vercel and Neon in the same region this takes seconds. Keep the Vercel function in the Neon region (see DEPLOYMENT.md).
 
 ## Monitoring
 

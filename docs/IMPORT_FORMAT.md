@@ -90,17 +90,17 @@ MY NOTES:
 | --- | --- | --- |
 | `format` | yes | Exactly `"gl-fencing-plan"` |
 | `version` | yes | `1` |
-| `drills` | | Library drills, upserted by `key` |
-| `templates` | | Practice templates, upserted by `key` (same fields as an event's practice fields, without a date) |
-| `seasons` | | Upserted by `name`. If `phases` is given, it replaces that season's phases |
-| `locations` | | Upserted by `name` / `shortName` (e.g. away venues with addresses) |
-| `events` | | Practices, meets, tournaments, recovery days, holidays, other. Upserted by `key` |
+| `drills` | | Drills, upserted by `key` — into the **target track** by default (see below) |
+| `templates` | | Practice templates, upserted by `key` (same fields as an event's practice fields, without a date) — target track by default |
+| `seasons` | | The season matching the target track's season (by name, or the only season in the file). Its `phases` replace the **target track's** phases. Name/date changes are shared and need the explicit shared option. Other seasons in the file are skipped with a warning |
+| `locations` | | Matched by `name` / `shortName`. Creating or changing shared locations needs the explicit shared option; otherwise unknown venues become venue text |
+| `events` | | Practices, meets, tournaments, recovery days, holidays, other. Upserted by `key` **within the target track** |
 
 ### Events
 
 | Field | Notes |
 | --- | --- |
-| `key` | Stable identifier, e.g. `2026-12-01-practice`. Re-importing the same key updates the event. A published event gets the import as an **unpublished draft change**, so students keep the old version until you publish. Exports use the event's internal id as its key, so a re-imported export updates the original events |
+| `key` | Stable identifier, e.g. `2026-12-01-practice`. Re-importing the same key into the same track updates that track's event (unchanged content = no change at all). A published event gets the import as an **unpublished draft change**, so students keep the old version until you publish. Exports use the import key, or the event's logical id when it has none, so a re-imported export updates the original events |
 | `kind` | `practice` (default), `meet`, `tournament`, `recovery`, `holiday`, `other` |
 | `date` | `YYYY-MM-DD` (local to the team time zone) |
 | `start`, `end` | `HH:MM` 24-hour local times. Practices default to the team's start time and *start + targetMinutes*. Omit both for all-day items |
@@ -139,6 +139,28 @@ Foil, épée and saber blocks at the same time run **in parallel**. The import r
 
 `key` (required), `title` (required), `weapons` (`[]` = all), `category`, `skills`, `level` (`beginner`/`intermediate`/`experienced`/`all`), `durationMin`, `equipment`, `tags`, `objective`, `setup`, `steps`, `partnerRoles`, `rotation`, `cues`, `successCriteria`, `variations` (`beginner`, `experienced`, `easier`, `harder`), `sets`, `reps`, `work`, `rest`, `links` (`[{ "label", "url" }]`, http/https only), `coachNotes` (private).
 
+## Tracks and event identity
+
+Every import goes into **one planning track** (the *Import* page uses the track open in that tab; the CLI requires `--track`). Imports never change the public schedule or phases — publishing is a separate, reviewed step. If the check reports any error, applying the file saves nothing (one transaction).
+
+**Event keys → identity**, for target track *T* in season *S*:
+
+1. an **active** event of *T* with this import key → update it;
+2. else, for a UUID-shaped key, an active event of *T* whose logical id (public link id) or working-copy id equals the key → update it;
+3. else **create** a new event in *T*, reusing an identity where one exists:
+   - a UUID-shaped key that is a logical event of season *S* (e.g. from an export of this season) → that identity;
+   - the same key used by another track's event in *S* (or by an event in Trash) → its identity. This is what makes "the same file in Track A and Track B" describe the *same* events: publishing either track's version updates one public link, never two;
+   - otherwise a brand-new identity.
+
+UUID-shaped keys are never looked up outside the target track and season, so an exported row id can't update another track or season. Uniqueness of keys is enforced per track **among active rows only**, so re-importing after clearing works even though the old rows are in Trash; the report lists keys that reuse a trashed event's identity, and restoring that trashed event later asks you to *keep both* (new identity) or *replace*. Duplicate keys within one file are an error.
+
+**Shared resources.** By default (`updateShared` off / no `--shared`):
+- drills and templates in the file are created as **track-only** copies (keyed per track); a shared drill/template with the same key and identical content is reused unchanged;
+- shared locations and season name/dates are not changed; the report lists every shared change it *would* make (“Proposed (not applied)”).
+With the explicit shared option, those shared items are created/updated instead and listed as applied.
+
+**Sizes.** Up to 1,500 events, 1,000 drills and 200 templates per file; a whole season is one request and one transaction. Split larger plans by date range.
+
 ## iCalendar (.ics) files
 
 **Import → Calendar file (.ics)** converts a meet schedule (e.g. exported from a league or athletic-department calendar) into this format so you can review it before importing:
@@ -152,16 +174,29 @@ You can also give the .ics file to an AI assistant (or to the developer) and ask
 
 ## Direct import from the command line (assistant or developer)
 
-Anyone working in this repository with the production `DATABASE_URL` (for example an AI coding assistant you've asked to enter data) can import without the web page. The data still arrives as drafts, credited to a coach account:
+Anyone working in this repository with the production `DATABASE_URL` (for example an AI coding assistant you've asked to enter data) can import without the web page. The data still arrives as drafts in the chosen track, credited to a coach account:
 
 ```bash
-npm run import -- plan.json --as you@example.com            # dry run: report only, nothing saved
-npm run import -- plan.json --as you@example.com --apply    # import
-npm run import -- meets.ics --as you@example.com --apply    # iCal; add --confirmed or --kind tournament as needed
+npm run import -- plan.json --as you@example.com --track "Track B"                 # dry run: report only, nothing saved
+npm run import -- plan.json --as you@example.com --track "2026–27 Season/Track B" --apply
+npm run import -- meets.ics --as you@example.com --track <track-id> --apply        # iCal; add --confirmed or --kind tournament
+npm run import -- plan.json --as you@example.com --track "Track A" --shared --apply # also update SHARED drills/templates/venues
 ```
+
+Without `--track` the command lists the available tracks and stops.
 
 The database URL is a full-access credential. Share it only with people or tools you trust, and prefer the upload page when that's enough.
 
-## Export
+## Export (planning export)
 
-Administrators can download everything in this same format (*Admin → Data → Download full export*). Use it as a portable backup, or hand it to an AI assistant as context ("here is my current season — propose next week's practices as an import file").
+Administrators can download a **planning export** in this same format (*Import* page → *Export*): one track (`/api/admin/export?track=<id>`, importable into any track for a round trip), or every season and track (`/api/admin/export`). It contains the coaches' **working copies, including private notes** — keep it private.
+
+Exports add a versioned extension that importers ignore:
+
+```json
+"planningExport": { "version": 2, "kind": "track" | "all", "season": "…", "track": "…", "note": "…", "workspaces": [ … ] }
+```
+
+`workspaces` (whole-app export only) lists every season with each track's phases and events. Drills and templates carry `"trackOnly": true` when they belong to one track. Older files without the extension (and version-1 exports) import as before.
+
+A planning export is **not** an image of the public schedule: drafts may differ from what is published. Published history lives in the app's three **public backups** (self-contained snapshots of what students saw); see [OPERATIONS.md](OPERATIONS.md).

@@ -40,14 +40,14 @@ export interface SeasonSummary {
 /** All seasons with their ACTIVE tracks and active event counts (coach-only data). */
 export async function listWorkspaces(db: DbOrTx = getDb()): Promise<SeasonSummary[]> {
   const s = await db.select().from(seasons).orderBy(desc(seasons.startDate), asc(seasons.name));
-  const t = await db
-    .select({
-      track: tracks,
-      eventCount: sql<number>`(SELECT count(*)::int FROM ${events} e WHERE e.track_id = ${tracks.id} AND e.deleted_at IS NULL)`,
-    })
-    .from(tracks)
-    .where(isNull(tracks.deletedAt))
-    .orderBy(asc(tracks.sortOrder), asc(tracks.createdAt));
+  const rows = await db.select().from(tracks).where(isNull(tracks.deletedAt)).orderBy(asc(tracks.sortOrder), asc(tracks.createdAt));
+  const counts = await db
+    .select({ trackId: events.trackId, n: sql<number>`count(*)::int` })
+    .from(events)
+    .where(isNull(events.deletedAt))
+    .groupBy(events.trackId);
+  const countOf = new Map(counts.map((c) => [c.trackId, c.n]));
+  const t = rows.map((track) => ({ track, eventCount: countOf.get(track.id) ?? 0 }));
   return s.map((season) => ({
     id: season.id,
     name: season.name,

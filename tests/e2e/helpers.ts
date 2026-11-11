@@ -65,8 +65,29 @@ export function practiceDoc(date: string, overrides: Record<string, unknown> = {
   };
 }
 
-export async function createEvent(page: Page, doc: unknown): Promise<{ id: string; version: number }> {
-  const r = await apiCall<{ event: { id: string; version: number } }>(page, "/api/events", { body: { doc } });
+export interface Workspace {
+  id: string;
+  name: string;
+  isDemo: boolean;
+  tracks: Array<{ id: string; name: string; eventCount: number }>;
+}
+
+export async function workspaces(page: Page): Promise<Workspace[]> {
+  const r = await apiCall<{ workspaces: Workspace[] }>(page, "/api/tracks");
+  expect(r.status).toBe(200);
+  return r.data.workspaces;
+}
+
+/** The main (non-demo) season's first track — "Track A" of the season created on a fresh install. */
+export async function mainTrack(page: Page): Promise<{ seasonId: string; trackId: string }> {
+  const ws = await workspaces(page);
+  const s = ws.find((w) => !w.isDemo && w.tracks.length) ?? ws[0];
+  return { seasonId: s.id, trackId: s.tracks[0].id };
+}
+
+export async function createEvent(page: Page, doc: unknown, trackId?: string): Promise<{ id: string; version: number; logicalId: string; trackId: string }> {
+  const t = trackId ?? (await mainTrack(page)).trackId;
+  const r = await apiCall<{ event: { id: string; version: number; logicalId: string; trackId: string } }>(page, "/api/events", { body: { doc, trackId: t } });
   expect(r.status).toBe(200);
   return r.data.event;
 }
